@@ -14,6 +14,8 @@ export interface Account {
   balance_available: number | null;
   currency: string;
   status: string;
+  /** Set when Akahu stopped returning this account; data is kept. */
+  missing_since: string | null;
   updated_at: string;
 }
 
@@ -36,6 +38,11 @@ export interface Transaction {
   is_transfer: boolean;
   is_manual: boolean;
   notes: string | null;
+  /** Original foreign amount/currency when Akahu provides a conversion. */
+  foreign_amount: number | null;
+  foreign_currency: string | null;
+  /** Set when the bank removed a settled transaction; excluded from totals, never deleted. */
+  removed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -64,7 +71,7 @@ export interface Category {
 }
 
 export type RuleField = "merchant" | "description" | "any";
-export type RuleMatch = "contains" | "exact" | "regex";
+export type RuleMatch = "contains" | "word" | "exact" | "regex";
 
 export interface Rule {
   id: string;
@@ -72,6 +79,8 @@ export interface Rule {
   pattern: string;
   field: RuleField;
   match_type: RuleMatch;
+  /** Comma-separated words; if any appears as a whole word the rule doesn't match (e.g. tower ⟂ "sky"). */
+  exclude_words: string | null;
   category_id: string;
   priority: number;
   created_at: string;
@@ -89,9 +98,13 @@ export interface Budget {
   updated_at: string;
 }
 
+export type PayFrequency = "weekly" | "fortnightly" | "monthly";
+
 export interface Settings {
   user_id: string;
   overall_monthly_cap: number | null;
+  pay_frequency: PayFrequency | null;
+  next_payday: string | null; // YYYY-MM-DD, any payday works as the anchor
   updated_at: string;
 }
 
@@ -125,6 +138,8 @@ export interface SyncLog {
   transactions_new: number;
   pending_count: number;
   error: string | null;
+  /** Non-fatal notes, e.g. "3 transactions removed by the bank". */
+  warnings: string | null;
 }
 
 /**
@@ -138,6 +153,85 @@ export interface ReimbursementLink {
   expense_id: string;
   income_id: string;
   amount: number; // positive NZD
+  /** IOU this payment settled (if any) and by how much, so unlinking can re-open it exactly. */
+  iou_id: string | null;
+  iou_amount: number;
+  created_at: string;
+}
+
+/** "Sam owes me $100" on an expense. Balance = amount − settled_amount. */
+export interface Iou {
+  id: string;
+  user_id: string;
+  expense_id: string;
+  person_name: string;
+  amount: number;
+  settled_amount: number;
+  status: "open" | "settled" | "cancelled";
+  created_at: string;
+  settled_at: string | null;
+}
+
+/** A proposed Net off, only ever applied when the user taps Accept. */
+export interface NetoffSuggestion {
+  id: string;
+  user_id: string;
+  income_id: string;
+  expense_id: string;
+  iou_id: string | null;
+  amount: number;
+  score: number;
+  reason: string;
+  status: "pending" | "accepted" | "dismissed";
+  created_at: string;
+}
+
+export interface Trip {
+  id: string;
+  user_id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  budget: number | null;
+  exclude_from_monthly: boolean;
+  include_all: boolean;
+  created_at: string;
+}
+
+/** Manual trip membership overrides. */
+export interface TripTransaction {
+  id: string;
+  user_id: string;
+  trip_id: string;
+  transaction_id: string;
+  mode: "include" | "exclude";
+  created_at: string;
+}
+
+export interface SubscriptionPref {
+  id: string;
+  user_id: string;
+  merchant_key: string;
+  status: "tracked" | "ignored";
+  first_detected_on: string;
+  created_at: string;
+}
+
+export interface WeeklyCap {
+  id: string;
+  user_id: string;
+  category_id: string;
+  amount: number;
+  updated_at: string;
+}
+
+export interface WeeklyRecap {
+  id: string;
+  user_id: string;
+  week_start: string; // Monday (NZ)
+  data: Record<string, unknown>;
+  summary: string;
+  generated_by: "claude" | "template";
   created_at: string;
 }
 
@@ -152,6 +246,13 @@ export interface Tables {
   chat_messages: ChatMessage;
   sync_log: SyncLog;
   reimbursement_links: ReimbursementLink;
+  ious: Iou;
+  netoff_suggestions: NetoffSuggestion;
+  trips: Trip;
+  trip_transactions: TripTransaction;
+  subscription_prefs: SubscriptionPref;
+  weekly_caps: WeeklyCap;
+  weekly_recaps: WeeklyRecap;
 }
 
 export type TableName = keyof Tables;

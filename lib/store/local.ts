@@ -18,6 +18,13 @@ const emptyDb = (): DB => ({
   chat_messages: [],
   sync_log: [],
   reimbursement_links: [],
+  ious: [],
+  netoff_suggestions: [],
+  trips: [],
+  trip_transactions: [],
+  subscription_prefs: [],
+  weekly_caps: [],
+  weekly_recaps: [],
 });
 
 /** Tables whose rows have no `id` column (keyed by user_id). */
@@ -28,6 +35,7 @@ const HAS_UPDATED_AT: TableName[] = [
   "pending_transactions",
   "budgets",
   "settings",
+  "weekly_caps",
 ];
 
 export function matches<T>(row: T, filter?: Filter<T>): boolean {
@@ -131,8 +139,9 @@ export class LocalStore implements Store {
 
   async upsert<K extends TableName>(
     table: K,
-    rows: (NewRow<Tables[K]> & { id?: string })[],
+    rows: Partial<Tables[K]>[],
     onConflict: string,
+    opts?: { ignoreDuplicates?: boolean },
   ): Promise<Tables[K][]> {
     const db = this.load();
     const keys = onConflict.split(",").map((s) => s.trim());
@@ -147,6 +156,7 @@ export class LocalStore implements Store {
     for (const raw of rows) {
       const r = { ...(raw as Record<string, unknown>), user_id: this.userId };
       const i = index.get(keyOf(r));
+      if (i !== undefined && opts?.ignoreDuplicates) continue;
       if (i !== undefined) {
         const merged: Record<string, unknown> = { ...(list[i] as unknown as Record<string, unknown>), ...r };
         if (HAS_UPDATED_AT.includes(table)) merged.updated_at = new Date().toISOString();

@@ -13,7 +13,7 @@ const NAV = [
   { href: "/transactions", label: "Activity", icon: "M4 6h16M4 12h16M4 18h10" },
   { href: "/inbox", label: "Inbox", icon: "M3 13l3-8h12l3 8v6a1 1 0 01-1 1H4a1 1 0 01-1-1zm0 0h5l1 3h6l1-3h5" },
   { href: "/chat", label: "Chat", icon: "M4 5h16v11H8l-4 4z" },
-  { href: "/budgets", label: "Budgets", icon: "M12 3v18M17 7H9.5a3 3 0 000 6h5a3 3 0 010 6H6" },
+  { href: "/more", label: "More", icon: "M4 6h4v4H4zM14 6h4v4h-4zM4 14h4v4H4zM14 14h4v4h-4z" },
 ];
 
 export default function AppShell({ status, children }: { status: Status; children: React.ReactNode }) {
@@ -61,7 +61,8 @@ export default function AppShell({ status, children }: { status: Status; childre
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
         <ul className="mx-auto grid max-w-3xl grid-cols-5">
           {NAV.map((n) => {
-            const active = n.href === "/" ? path === "/" : path.startsWith(n.href);
+            const MORE = ["/more", "/budgets", "/rules", "/owed", "/trips", "/subscriptions", "/recaps", "/settings"];
+            const active = n.href === "/" ? path === "/" : n.href === "/more" ? MORE.some((p) => path.startsWith(p)) : path.startsWith(n.href);
             return (
               <li key={n.href}>
                 <Link

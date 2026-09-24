@@ -77,6 +77,7 @@ interface Draft {
   merchant?: string;
   cat?: Cat;
   other_account?: string;
+  conversion?: { amount: number; currency: string; rate: number };
 }
 
 function weekday(ld: string): number {
@@ -245,7 +246,37 @@ export function mockDay(ld: string): Draft[] {
   const oddMonth = Number(ld.slice(5, 7)) % 2 === 1;
   if (dom === 11 && oddMonth) out.push({ account: MOCK_ACCOUNTS.amex, description: "SNUS DIRECT", amount: -money(r, 180, 365), type: "CREDIT CARD" });
   if (dom === 13 && oddMonth) out.push({ account: MOCK_ACCOUNTS.everyday, description: "SAM WILSON SNUS", amount: 100, type: "CREDIT" });
-  if (dow === 0 && r() < 0.3) out.push({ account: MOCK_ACCOUNTS.everyday, description: "JACK HARRIS DINNER", amount: money(r, 20, 80), type: "CREDIT" });
+  // Jack pays back exactly half of Friday's Soul Bar tab most Sundays.
+  if (dow === 0 && r() < 0.7) {
+    const tab = mockDay(addDays(ld, -2)).find((d) => d.description === "SOUL BAR & BISTRO");
+    if (tab) out.push({ account: MOCK_ACCOUNTS.everyday, description: "JACK HARRIS DINNER", amount: Math.round(Math.abs(tab.amount) * 50) / 100, type: "CREDIT" });
+  }
+
+  // Summer SEA trip (26 Dec – 17 Jan): foreign-currency spending on the Amex.
+  const md = ld.slice(5);
+  if (md >= "12-26" || md <= "01-17") {
+    const n = 1 + Math.floor(r() * 3);
+    for (let i = 0; i < n; i++) {
+      const [desc, merchant, currency, rate, lo, hi, cat] = pick(r, [
+        ["GRAB* SINGAPORE", "Grab", "SGD", 1.27, 8, 40, C.taxi],
+        ["HAWKER CENTRE SINGAPORE", null, "SGD", 1.27, 5, 25, C.cafe],
+        ["7-ELEVEN BANGKOK", "7-Eleven", "THB", 0.048, 60, 400, null],
+        ["CHATUCHAK MARKET BKK", null, "THB", 0.048, 300, 2500, null],
+        ["BOOKING.COM HOTEL HANOI", "Booking.com", "VND", 0.000067, 600000, 2200000, C.airline],
+        ["PHO 24 HANOI", null, "VND", 0.000067, 60000, 250000, C.cafe],
+      ] as [string, string | null, string, number, number, number, Cat][]);
+      const foreign = currency === "VND" ? Math.round(lo + r() * (hi - lo)) : money(r, lo, hi);
+      out.push({
+        account: MOCK_ACCOUNTS.amex,
+        description: desc,
+        merchant: merchant ?? undefined,
+        amount: -Math.round(foreign * rate * 100) / 100,
+        type: "CREDIT CARD",
+        cat,
+        conversion: { amount: foreign, currency, rate },
+      });
+    }
+  }
 
   return out;
 }
@@ -273,7 +304,10 @@ function toAkahu(ld: string, d: Draft, i: number): AkahuTransaction {
           groups: { personal_finance: { _id: `group_${d.cat.group.toLowerCase()}`, name: d.cat.group } },
         }
       : undefined,
-    meta: d.other_account ? { other_account: d.other_account } : undefined,
+    meta:
+      d.other_account || d.conversion
+        ? { ...(d.other_account ? { other_account: d.other_account } : {}), ...(d.conversion ? { conversion: d.conversion } : {}) }
+        : undefined,
   };
 }
 

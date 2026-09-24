@@ -18,10 +18,17 @@ import {
   updateCategory,
   UserError,
 } from "@/lib/services";
-import { matchAndLink } from "@/lib/reimburse";
+import { findExpenseCandidates, matchAndLink, nameMatches } from "@/lib/reimburse";
+import { cancelIou, createIou, listIous, owedByPerson, type IouView } from "@/lib/iou";
+import { createTrip, findTrip, tripSummary } from "@/lib/trips";
+import { setWeeklyCap, weeklyCapStatus } from "@/lib/caps";
+import { listSubscriptions } from "@/lib/subscriptions";
+import { clip, requireCategory } from "@/lib/services";
 
 const period = z.enum(["weekly", "fortnightly", "monthly", "yearly"]);
 const presets = z.enum([
+  "this_week",
+  "last_week",
   "this_month",
   "last_month",
   "last_3_months",
@@ -108,8 +115,45 @@ const schemas = {
     expense_id: z.string().optional().describe("Exact expense id, when the user picked one from candidates"),
     income_id: z.string().optional().describe("Exact incoming-payment id, when the user picked one from candidates"),
   }),
+  create_iou: z.object({
+    person: z.string().min(1).max(60).describe("Who owes the user, e.g. 'Sam'"),
+    amount: z.number().positive().optional().describe("How much they owe. Omit for the full expense."),
+    expense: z.string().optional().describe("Merchant/description of the expense, e.g. 'Snus Direct'"),
+    expense_amount: z.number().positive().optional(),
+    expense_date: z.string().optional().describe("YYYY-MM-DD / 'yesterday' (±3 days)"),
+    expense_id: z.string().optional().describe("Exact expense id, when the user picked one from candidates"),
+  }),
+  list_ious: z.object({
+    person: z.string().optional().describe("Only this person"),
+    include_settled: z.boolean().optional(),
+  }),
+  cancel_iou: z.object({
+    person: z.string().optional(),
+    expense: z.string().optional().describe("Merchant/description of the expense the IOU is on"),
+    iou_id: z.string().optional().describe("Exact IOU id, when the user picked one"),
+  }),
+  create_trip: z.object({
+    name: z.string().min(1).max(60),
+    start_date: z.string().describe("YYYY-MM-DD (or '26 Dec')"),
+    end_date: z.string().describe("YYYY-MM-DD (or '17 Jan')"),
+    budget: z.number().min(0).optional().describe("Total trip budget in NZD"),
+    exclude_from_monthly: z.boolean().optional().describe("Default true: trip spending doesn't count toward monthly budgets"),
+    include_all_spending: z.boolean().optional().describe("Count ALL spending in the date range, not just foreign/Travel"),
+  }),
+  trip_status: z.object({
+    trip: z.string().optional().describe("Trip name; omit for the current/most recent trip"),
+  }),
+  set_weekly_cap: z.object({
+    category: z.string(),
+    amount: z.number().positive().nullable().describe("Weekly cap in NZD (Mon–Sun). null removes it."),
+  }),
+  weekly_status: z.object({
+    category: z.string().optional().describe("Only this category"),
+  }),
+  list_subscriptions: z.object({}),
   get_budget_status: z.object({
     month: z.string().optional().describe("YYYY-MM. Defaults to the current month."),
+    pay_cycle: z.boolean().optional().describe("Use the current pay cycle instead of the calendar month (if set up)"),
   }),
 } as const;
 
@@ -131,6 +175,17 @@ const descriptions: Record<ToolName, string> = {
     "Get exact spending totals from the database, filtered by category and/or merchant over a period. Returns total, monthly breakdown, top merchants and largest transactions. Use for every spending question.",
   link_reimbursement:
     "Net off an expense with money someone paid me back (e.g. 'the $100 from Sam was for Snus Direct', 'Jack paid me back half of dinner at Soul Bar'). The expense then counts at its net amount and the linked incoming money is excluded from income. Searches the last 6 months by name, amount and date. If more than one expense or payment matches it links NOTHING and returns needs_choice with candidates — show them (date, description, amount) and ask which, then call again with expense_id/income_id.",
+  create_iou:
+    "Record that someone owes the user money for an expense ('Sam owes me 100 for Snus Direct'). If several expenses match it creates nothing and returns needs_choice — ask which, then call again with expense_id. When a matching payment is later netted off, the IOU settles automatically (partial payments reduce the balance).",
+  list_ious: "Who owes the user money: open IOUs grouped by person with balances and age in days.",
+  cancel_iou:
+    "Cancel an IOU (it's forgiven or was a mistake). If more than one open IOU matches, returns needs_choice — ask which, then call again with iou_id.",
+  create_trip:
+    "Create a trip (e.g. 'SEA trip from 26 Dec to 17 Jan, budget 5000'). Transactions in the date range that are foreign-currency or Travel are tagged automatically; by default trip spending is kept out of monthly budgets.",
+  trip_status: "How a trip is tracking: spent vs budget, daily average, remaining per day, by category.",
+  set_weekly_cap: "Set or remove a weekly (Mon–Sun) spending cap for a category, e.g. 'cap bars at 80 a week'.",
+  weekly_status: "This week's spending vs weekly caps (Mon–Sun, NZ). Use for 'how am I tracking on X this week?'.",
+  list_subscriptions: "Detected recurring charges with amount, frequency, next expected date, monthly total and flags.",
   get_budget_status:
     "Budget vs actual for a month: per-category spent/budget/remaining/pace, total, days left, projection and on_track.",
 };
@@ -181,6 +236,16 @@ function checkConfirmation(ctx: ToolContext, name: ToolName, args: Record<string
   const expected = confirmationToken(name, args);
   return args.confirmation_token === expected && ctx.priorTokens.has(expected);
 }
+
+const iouBrief = (i: IouView) => ({
+  id: i.id,
+  person: i.person_name,
+  amount: i.amount,
+  balance: i.balance,
+  status: i.status,
+  age_days: i.age_days,
+  expense: i.expense ? `${clip(i.expense.description)} on ${i.expense.date}` : null,
+});
 
 // ---------------------------------------------------------------- executor
 
@@ -314,7 +379,108 @@ export async function executeTool(ctx: ToolContext, name: string, rawInput: unkn
       }
       case "get_budget_status": {
         const a = parsed.data as z.infer<typeof schemas.get_budget_status>;
-        return await budgetStatus(store, a.month);
+        return await budgetStatus(store, { month: a.month, mode: a.pay_cycle ? "cycle" : "month" });
+      }
+      case "create_iou": {
+        const a = parsed.data as z.infer<typeof schemas.create_iou>;
+        if (!a.expense && !a.expense_id) return { error: "Say which expense (expense or expense_id)" };
+        const found = await findExpenseCandidates(store, {
+          expense: a.expense,
+          expense_amount: a.expense_amount,
+          expense_date: a.expense_date ? parseLocalDate(a.expense_date) : undefined,
+          expense_id: a.expense_id,
+        });
+        if (!found.length) return { error: `No expense matching "${a.expense ?? a.expense_id}" in the last 6 months` };
+        if (found.length > 1) {
+          return {
+            needs_choice: true,
+            instruction: "Nothing created yet. Ask which expense, then call again with expense_id.",
+            expense_candidates: found.slice(0, 8).map((t) => ({ id: t.id, date: t.local_date, description: clip(t.merchant_name ?? t.description), amount: t.amount })),
+            income_candidates: [],
+          };
+        }
+        const iou = await createIou(store, { expense_id: found[0].id, person_name: a.person, amount: a.amount });
+        return { ok: true, person: iou.person_name, amount: iou.amount, expense: clip(found[0].merchant_name ?? found[0].description), expense_date: found[0].local_date };
+      }
+      case "list_ious": {
+        const a = parsed.data as z.infer<typeof schemas.list_ious>;
+        if (a.include_settled || a.person) {
+          const rows = await listIous(store, { status: a.include_settled ? "all" : "open", person: a.person });
+          return { ious: rows.map(iouBrief) };
+        }
+        const owed = await owedByPerson(store);
+        return { total_owed: owed.total, people: owed.people.map((p) => ({ person: p.person, total: p.total, oldest_days: p.oldest_days, ious: p.ious.map(iouBrief) })) };
+      }
+      case "cancel_iou": {
+        const a = parsed.data as z.infer<typeof schemas.cancel_iou>;
+        let open = await listIous(store, { status: "open", person: a.person });
+        if (a.iou_id) open = open.filter((i) => i.id === a.iou_id);
+        if (a.expense) open = open.filter((i) => i.expense && nameMatches(a.expense!, { description: i.expense.description, merchant_name: null }));
+        if (!open.length) return { error: "No matching open IOU" };
+        if (open.length > 1) {
+          return { needs_choice: true, instruction: "Nothing cancelled. Ask which IOU, then call again with iou_id.", iou_candidates: open.map(iouBrief) };
+        }
+        const c = await cancelIou(store, open[0].id);
+        return { ok: true, cancelled: iouBrief({ ...open[0], ...c }) };
+      }
+      case "create_trip": {
+        const a = parsed.data as z.infer<typeof schemas.create_trip>;
+        const start = parseLocalDate(a.start_date);
+        let end = parseLocalDate(a.end_date);
+        if (end < start && !/\d{4}/.test(a.end_date)) end = `${Number(end.slice(0, 4)) + 1}${end.slice(4)}`; // "26 Dec → 17 Jan"
+        const trip = await createTrip(store, {
+          name: a.name,
+          start_date: start,
+          end_date: end,
+          budget: a.budget ?? null,
+          exclude_from_monthly: a.exclude_from_monthly,
+          include_all: a.include_all_spending,
+        });
+        const s = await tripSummary(store, trip.id);
+        return { ok: true, trip: trip.name, start_date: trip.start_date, end_date: trip.end_date, budget: trip.budget, exclude_from_monthly: trip.exclude_from_monthly, transactions_tagged: s.transactions.length, spent_so_far: s.spent };
+      }
+      case "trip_status": {
+        const a = parsed.data as z.infer<typeof schemas.trip_status>;
+        const trip = findTrip(await store.select("trips"), a.trip);
+        if (!trip) return { error: a.trip ? `No trip called "${a.trip}"` : "No trips yet" };
+        const s = await tripSummary(store, trip.id);
+        return {
+          trip: s.trip.name,
+          dates: `${s.trip.start_date} → ${s.trip.end_date}`,
+          status: s.status,
+          spent: s.spent,
+          budget: s.budget,
+          remaining: s.remaining,
+          days_elapsed: s.days_elapsed,
+          days_left: s.days_left,
+          daily_average: s.daily_average,
+          remaining_per_day: s.remaining_per_day,
+          by_category: s.by_category.slice(0, 6),
+          transactions: s.transactions.length,
+        };
+      }
+      case "set_weekly_cap": {
+        const a = parsed.data as z.infer<typeof schemas.set_weekly_cap>;
+        const r = await setWeeklyCap(store, a.category, a.amount);
+        return { ok: true, ...r };
+      }
+      case "weekly_status": {
+        const a = parsed.data as z.infer<typeof schemas.weekly_status>;
+        const w = await weeklyCapStatus(store);
+        if (!a.category) return w;
+        const cats = await store.select("categories");
+        const cat = requireCategory(cats, a.category);
+        const cap = w.caps.find((c) => c.category_id === cat.id);
+        const range = { from: w.week_start, to: todayLocal() };
+        const q = await querySpending(store, { ...range, category: cat.id });
+        return { week_start: w.week_start, week_end: w.week_end, days_left: w.days_left, category: cat.name, spent_this_week: q.total_spent, weekly_cap: cap?.cap ?? null, remaining: cap?.remaining ?? null, pct: cap?.pct ?? null, level: cap?.level ?? "no cap" };
+      }
+      case "list_subscriptions": {
+        const r = await listSubscriptions(store);
+        return {
+          monthly_total: r.monthly_total,
+          subscriptions: r.subscriptions.filter((x) => !x.lapsed).map((x) => ({ name: clip(x.name), amount: x.amount, frequency: x.frequency, next_expected: x.next_expected, monthly_equivalent: x.monthly_equivalent, price_increase: x.price_increase, is_new: x.is_new, missed: x.missed })),
+        };
       }
     }
   } catch (err) {

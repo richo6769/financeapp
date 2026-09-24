@@ -3,7 +3,7 @@
 -- The server-side cron uses the service-role key (bypasses RLS) and always
 -- writes user_id explicitly.
 
-create extension if not exists pgcrypto;
+-- gen_random_uuid() is built into Postgres 13+, so no extension is needed.
 
 -- updated_at helper
 create or replace function public.set_updated_at() returns trigger
@@ -25,6 +25,7 @@ create table public.accounts (
   balance_available numeric(14,2),
   currency text not null default 'NZD',
   status text not null default 'ACTIVE',
+  missing_since timestamptz,                   -- Akahu stopped returning it; history kept
   updated_at timestamptz not null default now()
 );
 create index accounts_user_idx on public.accounts(user_id);
@@ -63,11 +64,15 @@ create table public.transactions (
   is_transfer boolean not null default false,
   is_manual boolean not null default false,
   notes text,
+  foreign_amount numeric(18,2),                -- original amount when Akahu gives a conversion
+  foreign_currency text check (foreign_currency ~ '^[A-Z]{3}$'),
+  removed_at timestamptz,                      -- bank removed it after settling; excluded, never deleted
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 create index transactions_user_date_idx on public.transactions(user_id, local_date desc);
 create index transactions_user_category_idx on public.transactions(user_id, category_id);
+create index transactions_account_idx on public.transactions(account_id);
 create trigger transactions_updated_at before update on public.transactions
   for each row execute function public.set_updated_at();
 
@@ -90,9 +95,11 @@ create index pending_user_idx on public.pending_transactions(user_id);
 create table public.rules (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
-  pattern text not null,
+  pattern text not null check (char_length(pattern) between 1 and 100),
   field text not null default 'any' check (field in ('merchant','description','any')),
-  match_type text not null default 'contains' check (match_type in ('contains','exact','regex')),
+  -- word = whole-word match (used for short patterns like 'bp', 'ami')
+  match_type text not null default 'contains' check (match_type in ('contains','word','exact','regex')),
+  exclude_words text check (char_length(exclude_words) <= 200),  -- comma-separated veto words
   category_id uuid not null references public.categories(id) on delete cascade,
   priority integer not null default 100,       -- lower wins
   created_at timestamptz not null default now()
@@ -113,10 +120,12 @@ create table public.budgets (
 create trigger budgets_updated_at before update on public.budgets
   for each row execute function public.set_updated_at();
 
--- Overall monthly cap and other per-user settings.
+-- Overall monthly cap, pay cycle and other per-user settings.
 create table public.settings (
   user_id uuid primary key default auth.uid() references auth.users(id) on delete cascade,
-  overall_monthly_cap numeric(14,2),
+  overall_monthly_cap numeric(14,2) check (overall_monthly_cap >= 0),
+  pay_frequency text check (pay_frequency in ('weekly','fortnightly','monthly')),
+  next_payday date,                            -- any payday; used as the cycle anchor
   updated_at timestamptz not null default now()
 );
 create trigger settings_updated_at before update on public.settings
@@ -148,7 +157,8 @@ create table public.sync_log (
   transactions_upserted integer not null default 0,
   transactions_new integer not null default 0,
   pending_count integer not null default 0,
-  error text
+  error text,
+  warnings text
 );
 create index sync_log_user_started_idx on public.sync_log(user_id, started_at desc);
 

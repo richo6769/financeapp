@@ -12,6 +12,7 @@ import type {
 } from "@/lib/types";
 import {
   addMonths,
+  daysBetween,
   localDateToIso,
   monthEnd,
   monthKey,
@@ -20,71 +21,29 @@ import {
   monthStart,
   todayLocal,
 } from "@/lib/dates";
-import { round2, toMonthly } from "@/lib/money";
-import { merchantPattern, normalise, ruleMatches } from "@/lib/categorise";
+import { fromCents, monthlyToCycleCents, mulDiv, sumCents, toCents, toMonthly, type Cents } from "@/lib/money";
+import { currentCycle } from "@/lib/paycycle";
+import { monthlyExclusions } from "@/lib/trips";
+import { defaultMatchType, merchantPattern, normalise, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
 import { applyNet, loadLinkTotals } from "@/lib/reimburse";
 
 export const BULK_CONFIRM_THRESHOLD = 20;
 
 export { UserError } from "@/lib/errors";
 import { UserError } from "@/lib/errors";
+export { rootOf, categoryLabel, findCategory, requireCategory } from "@/lib/categories";
+import { rootOf, categoryLabel, findCategory, requireCategory } from "@/lib/categories";
 
 // ---------------------------------------------------------------- categories
-
-export function rootOf(cats: Category[], id: string | null): Category | undefined {
-  let c = cats.find((x) => x.id === id);
-  for (let i = 0; c?.parent_id && i < 5; i++) c = cats.find((x) => x.id === c!.parent_id);
-  return c;
-}
-
-export function categoryLabel(cats: Category[], id: string | null): string {
-  const c = cats.find((x) => x.id === id);
-  if (!c) return "Uncategorised";
-  const p = c.parent_id ? cats.find((x) => x.id === c.parent_id) : undefined;
-  return p ? `${p.name} › ${c.name}` : c.name;
-}
-
-/** Resolve a category by id, exact name, "Parent > Child", or loose match. */
-export function findCategory(cats: Category[], ref: string | null | undefined): Category | undefined {
-  if (!ref) return undefined;
-  const byId = cats.find((c) => c.id === ref);
-  if (byId) return byId;
-  const parts = ref.split(/\s*(?:>|›|\/(?=\s))\s*/);
-  if (parts.length === 2) {
-    const parent = findCategory(cats.filter((c) => !c.parent_id), parts[0]);
-    if (parent) {
-      const child = cats.find((c) => c.parent_id === parent.id && normalise(c.name) === normalise(parts[1]));
-      if (child) return child;
-    }
-  }
-  const n = normalise(ref);
-  return (
-    cats.find((c) => normalise(c.name) === n && !c.parent_id) ??
-    cats.find((c) => normalise(c.name) === n) ??
-    cats.find((c) => normalise(c.name).replaceAll(" ", "") === n.replaceAll(" ", "")) ??
-    // Parts of compound names: "fuel" → Transport/Fuel, "health" → Health & Wellness.
-    cats.find((c) => !c.parent_id && c.name.split(/\s*[/&]\s*/).some((part) => normalise(part) === n)) ??
-    cats.find((c) => !c.parent_id && (normalise(c.name).startsWith(n) || n.startsWith(normalise(c.name))))
-  );
-}
-
-export function requireCategory(cats: Category[], ref: string): Category {
-  const c = findCategory(cats, ref);
-  if (!c) {
-    throw new UserError(
-      `No category called "${ref}". Existing: ${cats.filter((x) => !x.parent_id).map((x) => x.name).join(", ")}`,
-    );
-  }
-  return c;
-}
 
 export async function createCategory(
   store: Store,
   input: { name: string; parent?: string | null; kind?: CategoryKind; color?: string | null },
 ): Promise<Category> {
   const cats = await store.select("categories");
-  const name = input.name.trim();
+  const name = String(input.name ?? "").trim();
   if (!name) throw new UserError("Category name is required");
+  if (name.length > 60) throw new UserError("Category name is too long (max 60 characters)");
   const parent = input.parent ? requireCategory(cats, input.parent) : undefined;
   if (parent?.parent_id) throw new UserError("Subcategories can only be one level deep");
   const dupe = cats.find(
@@ -111,7 +70,10 @@ export async function updateCategory(
   const cats = await store.select("categories");
   const cat = requireCategory(cats, ref);
   const next: Partial<Category> = {};
-  if (patch.name?.trim()) next.name = patch.name.trim();
+  if (patch.name?.trim()) {
+    if (patch.name.trim().length > 60) throw new UserError("Category name is too long (max 60 characters)");
+    next.name = patch.name.trim();
+  }
   if (patch.kind) next.kind = patch.kind;
   if (patch.color !== undefined) next.color = patch.color;
   if (patch.parent !== undefined) {
@@ -184,7 +146,7 @@ export async function setBudget(
   const { monthly, explanation } = toMonthly(input.amount, period);
   const [budget] = await store.upsert(
     "budgets",
-    [{ category_id: cat.id, amount_monthly: monthly, period, period_amount: round2(input.amount) }],
+    [{ category_id: cat.id, amount_monthly: monthly, period, period_amount: fromCents(toCents(input.amount)) }],
     "user_id,category_id",
   );
   return { budget, category: categoryLabel(cats, cat.id), explanation };
@@ -215,22 +177,26 @@ export async function createRule(
     category: string;
     field?: RuleField;
     match_type?: RuleMatch;
+    exclude_words?: string | null;
     apply_to_existing?: boolean;
     confirmed?: boolean;
   },
 ): Promise<{ rule: Rule | null; category: string; matched_existing: number; applied: number; needs_confirmation: boolean }> {
   const pattern = input.pattern.trim();
   if (!pattern) throw new UserError("Rule pattern is required");
+  if (pattern.length > 100) throw new UserError("Rule pattern is too long (max 100 characters)");
   if (input.match_type === "regex") {
-    try {
-      new RegExp(pattern, "i");
-    } catch {
-      throw new UserError("Invalid regular expression");
-    }
+    const why = unsafeRegexReason(pattern);
+    if (why) throw new UserError(why);
   }
   const cats = await store.select("categories");
   const cat = requireCategory(cats, input.category);
-  const draft = { pattern, field: input.field ?? "any", match_type: input.match_type ?? "contains" } as const;
+  const draft = {
+    pattern,
+    field: input.field ?? "any",
+    match_type: input.match_type ?? defaultMatchType(pattern),
+    exclude_words: input.exclude_words?.trim() || null,
+  } as const;
 
   // Which existing (non-manual) transactions would this rule re-categorise?
   const txns = await store.select("transactions");
@@ -379,6 +345,7 @@ export async function addManualTransaction(
   const cat = input.category ? requireCategory(cats, input.category) : undefined;
   const ld = input.date ?? todayLocal();
   // Positive "spent 40" -> stored as -40 (debit) unless the category is income.
+  if (!(Math.abs(input.amount) > 0) || Math.abs(input.amount) > 1_000_000) throw new UserError("Amount must be between $0.01 and $1,000,000");
   const amount = cat?.kind === "income" ? Math.abs(input.amount) : -Math.abs(input.amount);
   const [transaction] = await store.insert("transactions", [
     {
@@ -388,7 +355,7 @@ export async function addManualTransaction(
       local_date: ld,
       description: input.description,
       merchant_name: null,
-      amount: round2(amount),
+      amount: fromCents(toCents(amount)),
       type: "CASH",
       akahu_category: null,
       category_id: cat?.id ?? null,
@@ -396,6 +363,9 @@ export async function addManualTransaction(
       is_transfer: false,
       is_manual: true,
       notes: input.notes ?? null,
+      foreign_amount: null,
+      foreign_currency: null,
+      removed_at: null,
     },
   ]);
   return { transaction, category: cat ? categoryLabel(cats, cat.id) : "Uncategorised" };
@@ -404,22 +374,29 @@ export async function addManualTransaction(
 // ------------------------------------------------------------------ analytics
 
 /**
- * Spending rules:
+ * Spending rules (all maths in integer cents):
  *  - Transfers (own-account moves, card repayments) never count.
  *  - Income categories never count.
+ *  - Rows the bank removed after settling never count.
  *  - Expense-category rows count as -amount, so refunds (credits) reduce
- *    spend in their original category.
+ *    spend in their original category. A category can go negative in a month
+ *    where refunds exceed purchases; totals keep the true figure and the UI
+ *    clamps bars/percentages at zero and labels it "refunds".
  *  - Callers pass NET amounts (see lib/reimburse.ts applyNet), so a $365
  *    expense with $100 paid back by a mate counts as $265.
  *  - Uncategorised debits count as spend (so totals are honest before triage);
  *    uncategorised credits are ignored until categorised.
  */
-export function spendOf(t: Transaction, cats: Category[]): number {
-  if (t.is_transfer) return 0;
-  if (!t.category_id) return t.amount < 0 ? -t.amount : 0;
+export function spendCentsOf(t: Transaction, cats: Category[]): Cents {
+  if (t.is_transfer || t.removed_at) return 0;
+  if (!t.category_id) return t.amount < 0 ? -toCents(t.amount) : 0;
   const root = rootOf(cats, t.category_id);
   if (!root || root.kind !== "expense") return 0;
-  return -t.amount;
+  return -toCents(t.amount);
+}
+
+export function spendOf(t: Transaction, cats: Category[]): number {
+  return fromCents(spendCentsOf(t, cats));
 }
 
 export interface CategorySpend {
@@ -431,15 +408,32 @@ export interface CategorySpend {
   remaining: number | null;
   pct: number | null;
   over: boolean;
+  /** Refunds exceeded purchases in this period. */
+  negative: boolean;
   count: number;
+}
+
+export interface SpendOptions {
+  includeUnbudgeted?: boolean;
+  /** Scale monthly budgets to the period (e.g. pay cycle). Default: as-is. */
+  scaleBudget?: (monthlyCents: Cents) => Cents;
+  /** Leave out trips marked "exclude from monthly". Default true. */
+  excludeTrips?: boolean;
 }
 
 export async function spendingByCategory(
   store: Store,
   from: string,
   to: string,
-  opts: { includeUnbudgeted?: boolean } = {},
-): Promise<{ rows: CategorySpend[]; total: number; income: number; txns: Transaction[]; cats: Category[] }> {
+  opts: SpendOptions = {},
+): Promise<{
+  rows: CategorySpend[];
+  total: number;
+  income: number;
+  trip_excluded: number;
+  txns: (Transaction & { gross_amount: number })[];
+  cats: Category[];
+}> {
   const [cats, rawTxns, budgets, links] = await Promise.all([
     store.select("categories"),
     store.select("transactions", { gte: { local_date: from }, lte: { local_date: to } }),
@@ -447,15 +441,20 @@ export async function spendingByCategory(
     loadLinkTotals(store),
   ]);
   // Net off: expenses count at their net amount; linked incoming money is excluded.
-  const txns = applyNet(rawTxns, links);
-  const byRoot = new Map<string, { spent: number; count: number }>();
-  let total = 0;
-  let income = 0;
+  const netted = applyNet(rawTxns, links);
+  const excluded = opts.excludeTrips === false ? new Set<string>() : await monthlyExclusions(store, rawTxns);
+  const txns = netted.filter((t) => !excluded.has(t.id));
+  const tripExcluded = netted.filter((t) => excluded.has(t.id)).reduce((a, t) => a + spendCentsOf(t, cats), 0);
+
+  const byRoot = new Map<string, { spent: Cents; count: number }>();
+  let total: Cents = 0;
+  let income: Cents = 0;
   for (const t of txns) {
-    const s = spendOf(t, cats);
+    if (t.removed_at) continue;
     const root = rootOf(cats, t.category_id);
-    if (root?.kind === "income" && !t.is_transfer) income += t.amount;
-    if (s === 0 && !(root?.kind === "expense")) continue;
+    if (root?.kind === "income" && !t.is_transfer) income += toCents(t.amount);
+    const s = spendCentsOf(t, cats);
+    if (s === 0 && root?.kind !== "expense") continue;
     total += s;
     const key = root?.id ?? "__uncat";
     const cur = byRoot.get(key) ?? { spent: 0, count: 0 };
@@ -463,101 +462,134 @@ export async function spendingByCategory(
     cur.count++;
     byRoot.set(key, cur);
   }
+  const scale = opts.scaleBudget ?? ((c: Cents) => c);
   // Budgets on a root apply to root + subcategories; budgets on subcategories
   // are summed into the parent if the parent has none.
-  const budgetFor = (root: Category): number | null => {
+  const budgetFor = (root: Category): Cents | null => {
     const own = budgets.find((b) => b.category_id === root.id);
-    if (own) return own.amount_monthly;
+    if (own) return scale(toCents(own.amount_monthly));
     const subs = budgets.filter((b) => cats.find((c) => c.id === b.category_id)?.parent_id === root.id);
-    return subs.length ? subs.reduce((a, b) => a + b.amount_monthly, 0) : null;
+    return subs.length ? scale(sumCents(subs.map((b) => b.amount_monthly))) : null;
   };
+  const row = (id: string | null, name: string, color: string | null, spent: Cents, budget: Cents | null, count: number): CategorySpend => ({
+    category_id: id,
+    name,
+    color,
+    spent: fromCents(spent),
+    budget: budget == null ? null : fromCents(budget),
+    remaining: budget == null ? null : fromCents(budget - spent),
+    pct: budget ? Math.max(0, Math.round((spent * 100) / budget)) : null,
+    over: budget != null && spent > budget,
+    negative: spent < 0,
+    count,
+  });
   const rows: CategorySpend[] = [];
   for (const root of cats.filter((c) => !c.parent_id && c.kind === "expense")) {
     const s = byRoot.get(root.id);
     const budget = budgetFor(root);
     if (!s && budget == null && !opts.includeUnbudgeted) continue;
-    const spent = round2(s?.spent ?? 0);
-    rows.push({
-      category_id: root.id,
-      name: root.name,
-      color: root.color,
-      spent,
-      budget,
-      remaining: budget == null ? null : round2(budget - spent),
-      pct: budget ? Math.round((spent / budget) * 100) : null,
-      over: budget != null && spent > budget,
-      count: s?.count ?? 0,
-    });
+    rows.push(row(root.id, root.name, root.color, s?.spent ?? 0, budget, s?.count ?? 0));
   }
   const unc = byRoot.get("__uncat");
-  if (unc) {
-    rows.push({
-      category_id: null,
-      name: "Uncategorised",
-      color: "#9ca3af",
-      spent: round2(unc.spent),
-      budget: null,
-      remaining: null,
-      pct: null,
-      over: false,
-      count: unc.count,
-    });
-  }
+  if (unc) rows.push(row(null, "Uncategorised", "#9ca3af", unc.spent, null, unc.count));
   rows.sort((a, b) => (b.budget ?? -1) - (a.budget ?? -1) || b.spent - a.spent);
-  return { rows, total: round2(total), income: round2(income), txns, cats };
+  return { rows, total: fromCents(total), income: fromCents(income), trip_excluded: fromCents(tripExcluded), txns, cats };
 }
 
-export async function budgetStatus(store: Store, month?: string) {
+export type PeriodMode = "month" | "cycle";
+
+export async function budgetStatus(store: Store, opts: { month?: string; mode?: PeriodMode } | string = {}) {
+  const o = typeof opts === "string" ? { month: opts } : opts;
   const today = todayLocal();
-  const ref = month ? `${month.slice(0, 7)}-01` : today;
-  const isCurrent = monthKey(ref) === monthKey(today);
-  const from = monthStart(ref);
-  const to = isCurrent ? today : monthEnd(ref);
-  const prog = isCurrent ? monthProgress(today) : { ...monthProgress(monthEnd(ref)), daysLeft: 0, fraction: 1 };
-  const [{ rows, total, income }, settings] = await Promise.all([
-    spendingByCategory(store, from, to),
-    store.select("settings"),
-  ]);
-  const cap = settings[0]?.overall_monthly_cap ?? null;
+  const [settingsRows] = await Promise.all([store.select("settings")]);
+  const settings = settingsRows[0];
+  const cycle = o.mode === "cycle" && !o.month ? currentCycle(settings, today) : null;
+
+  let from: string, to: string, label: string, key: string;
+  let dayOf: number, daysIn: number, daysLeft: number, fracNum: number, fracDen: number;
+  let scale: ((c: Cents) => Cents) | undefined;
+  if (cycle) {
+    from = cycle.start;
+    to = today;
+    key = `cycle:${cycle.start}`;
+    label = `Pay cycle ${shortLabel(cycle.start)} – ${shortLabel(cycle.end)}`;
+    dayOf = daysBetween(cycle.start, today) + 1;
+    daysIn = cycle.lengthDays;
+    daysLeft = daysBetween(today, cycle.end);
+    [fracNum, fracDen] = [dayOf, daysIn];
+    scale = (c) => monthlyToCycleCents(c, cycle.frequency);
+  } else {
+    const ref = o.month ? `${o.month.slice(0, 7)}-01` : today;
+    const isCurrent = monthKey(ref) === monthKey(today);
+    from = monthStart(ref);
+    to = isCurrent ? today : monthEnd(ref);
+    key = monthKey(ref);
+    label = monthLabel(monthKey(ref), "long");
+    const prog = monthProgress(isCurrent ? today : monthEnd(ref));
+    dayOf = prog.dayOfMonth;
+    daysIn = prog.daysInMonth;
+    daysLeft = isCurrent ? prog.daysLeft : 0;
+    [fracNum, fracDen] = isCurrent ? [prog.dayOfMonth, prog.daysInMonth] : [1, 1];
+  }
+  const spend = await spendingByCategory(store, from, to, { scaleBudget: scale });
+  const { rows } = spend;
+  const capMonthly = settings?.overall_monthly_cap == null ? null : toCents(settings.overall_monthly_cap);
+  const cap = capMonthly == null ? null : (scale ?? ((c: Cents) => c))(capMonthly);
   const budgeted = rows.filter((r) => r.budget != null);
-  const totalBudget = round2(budgeted.reduce((a, r) => a + (r.budget ?? 0), 0));
+  const totalBudget = sumCents(budgeted.map((r) => r.budget!));
   const categories = rows.map((r) => {
-    const expected = r.budget != null ? round2(r.budget * prog.fraction) : null;
+    const b = r.budget == null ? null : toCents(r.budget);
+    const expected = b == null ? null : mulDiv(b, fracNum, fracDen);
+    const spent = toCents(r.spent);
     return {
       ...r,
-      expected_by_now: expected,
+      expected_by_now: expected == null ? null : fromCents(expected),
       status:
-        r.budget == null
+        b == null
           ? "no budget"
-          : r.spent > r.budget
+          : spent > b
             ? "over budget"
-            : expected != null && r.spent > expected * 1.1
+            : expected != null && spent * 10 > expected * 11
               ? "ahead of pace"
               : "on track",
     };
   });
   // With an overall cap, compare all spending to it; otherwise compare the
   // budgeted categories' spending to the sum of their budgets.
-  const budgetedSpent = round2(budgeted.reduce((a, r) => a + r.spent, 0));
+  const total = toCents(spend.total);
+  const budgetedSpent = sumCents(budgeted.map((r) => r.spent));
   const limit = cap ?? (totalBudget || null);
   const measured = cap != null ? total : budgetedSpent;
   return {
-    month: monthKey(ref),
-    month_label: monthLabel(monthKey(ref), "long"),
-    day_of_month: prog.dayOfMonth,
-    days_in_month: prog.daysInMonth,
-    days_left: prog.daysLeft,
-    month_fraction_elapsed: round2(prog.fraction),
-    total_spent: total,
-    income,
-    overall_cap: cap,
-    total_of_category_budgets: totalBudget,
-    budgeted_categories_spent: budgetedSpent,
-    remaining: limit == null ? null : round2(limit - measured),
-    projected_month_spend: prog.fraction > 0 ? round2(total / prog.fraction) : total,
-    on_track: limit == null ? null : measured <= limit * prog.fraction * 1.05 && !categories.some((c) => c.over),
+    mode: cycle ? ("cycle" as const) : ("month" as const),
+    cycle_available: Boolean(settings?.pay_frequency && settings?.next_payday),
+    period_key: key,
+    month: cycle ? monthKey(today) : key,
+    month_label: label,
+    period_label: label,
+    from,
+    to,
+    day_of_month: dayOf,
+    days_in_month: daysIn,
+    days_left: daysLeft,
+    month_fraction_elapsed: Math.round((fracNum * 100) / fracDen) / 100,
+    total_spent: fromCents(total),
+    income: spend.income,
+    trip_excluded: spend.trip_excluded,
+    overall_cap: cap == null ? null : fromCents(cap),
+    total_of_category_budgets: fromCents(totalBudget),
+    budgeted_categories_spent: fromCents(budgetedSpent),
+    remaining: limit == null ? null : fromCents(limit - measured),
+    projected_month_spend: fromCents(mulDiv(total, fracDen, fracNum)),
+    // within 5% of the pro-rata limit and no category over
+    on_track: limit == null ? null : measured * 100 * fracDen <= limit * fracNum * 105 && !categories.some((c) => c.over),
     categories,
   };
+}
+
+function shortLabel(ld: string) {
+  const [y, m, d] = ld.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-NZ", { day: "numeric", month: "short", timeZone: "UTC" });
 }
 
 export async function querySpending(
@@ -571,15 +603,12 @@ export async function querySpending(
   ]);
   const rows = applyNet(rawRows, links); // net of reimbursements
   // For a merchant/category question count the actual spend (refunds net off).
-  const relevant = rows.filter((t) => !t.is_transfer);
-  const spend = (t: Transaction) => {
-    const root = rootOf(cats, t.category_id);
-    if (root?.kind === "income") return 0;
-    return -t.amount;
-  };
-  const byMonth = new Map<string, number>();
-  const byMerchant = new Map<string, { total: number; count: number }>();
-  let total = 0;
+  // Trips are included here: this answers "how much did I spend", not budgets.
+  const relevant = rows.filter((t) => !t.is_transfer && !t.removed_at);
+  const spend = (t: Transaction): Cents => (rootOf(cats, t.category_id)?.kind === "income" ? 0 : -toCents(t.amount));
+  const byMonth = new Map<string, Cents>();
+  const byMerchant = new Map<string, { total: Cents; count: number }>();
+  let total: Cents = 0;
   for (const t of relevant) {
     const s = spend(t);
     total += s;
@@ -590,69 +619,27 @@ export async function querySpending(
     cur.count++;
     byMerchant.set(m, cur);
   }
-  const incomeTotal = relevant
-    .filter((t) => rootOf(cats, t.category_id)?.kind === "income")
-    .reduce((a, t) => a + t.amount, 0);
+  const incomeTotal = sumCents(relevant.filter((t) => rootOf(cats, t.category_id)?.kind === "income").map((t) => t.amount));
   return {
     from: input.from,
     to: input.to,
     category: input.category ?? null,
     merchant: input.merchant ?? null,
-    total_spent: round2(total),
-    income_received: round2(incomeTotal),
+    total_spent: fromCents(total),
+    income_received: fromCents(incomeTotal),
     transaction_count: relevant.length,
-    excluded_transfers: rows.length - relevant.length,
-    by_month: [...byMonth.entries()].sort().map(([month, amt]) => ({ month, spent: round2(amt) })),
+    excluded_transfers: rows.filter((t) => t.is_transfer).length,
+    by_month: [...byMonth.entries()].sort().map(([month, c]) => ({ month, spent: fromCents(c) })),
     top_merchants: [...byMerchant.entries()]
       .sort((a, b) => b[1].total - a[1].total)
       .slice(0, 8)
-      .map(([name, v]) => ({ name, spent: round2(v.total), count: v.count })),
-    largest: relevant
+      .map(([name, v]) => ({ name: clip(name), spent: fromCents(v.total), count: v.count })),
+    largest: [...relevant]
       .sort((a, b) => a.amount - b.amount)
       .slice(0, 5)
-      .map((t) => ({ date: t.local_date, description: t.description, amount: t.amount, category: categoryLabel(cats, t.category_id) })),
+      .map((t) => ({ date: t.local_date, description: clip(t.description), amount: t.amount, category: categoryLabel(cats, t.category_id) })),
   };
 }
 
-export async function dashboard(store: Store) {
-  const today = todayLocal();
-  const status = await budgetStatus(store);
-  const trendFrom = monthStart(addMonths(today, -5));
-  const [{ txns, cats }, accounts, pending, lastSync, uncategorised] = await Promise.all([
-    spendingByCategory(store, trendFrom, today),
-    store.select("accounts"),
-    store.select("pending_transactions"),
-    store.select("sync_log", undefined, { order: { column: "started_at", ascending: false }, limit: 1 }),
-    store.select("transactions", { eq: { category_id: null } }),
-  ]);
-  const months: string[] = [];
-  for (let i = 5; i >= 0; i--) months.push(monthKey(addMonths(monthStart(today), -i)));
-  const trend = months.map((m) => ({
-    month: m,
-    label: monthLabel(m),
-    spent: round2(txns.filter((t) => monthKey(t.local_date) === m).reduce((a, t) => a + spendOf(t, cats), 0)),
-  }));
-  const thisMonth = txns.filter((t) => t.local_date >= monthStart(today));
-  const merchants = new Map<string, { spent: number; count: number }>();
-  for (const t of thisMonth) {
-    const s = spendOf(t, cats);
-    if (s <= 0) continue;
-    const key = t.merchant_name ?? t.description;
-    const cur = merchants.get(key) ?? { spent: 0, count: 0 };
-    cur.spent += s;
-    cur.count++;
-    merchants.set(key, cur);
-  }
-  return {
-    status,
-    trend,
-    top_merchants: [...merchants.entries()]
-      .sort((a, b) => b[1].spent - a[1].spent)
-      .slice(0, 6)
-      .map(([name, v]) => ({ name, spent: round2(v.spent), count: v.count })),
-    accounts,
-    pending: pending.sort((a, b) => b.date.localeCompare(a.date)),
-    last_sync: lastSync[0] ?? null,
-    uncategorised_count: uncategorised.length,
-  };
-}
+export { clip } from "@/lib/text";
+import { clip } from "@/lib/text";

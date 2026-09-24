@@ -1,6 +1,8 @@
 import { withStore } from "@/lib/api";
-import { dashboard } from "@/lib/services";
+import { dashboard } from "@/lib/dashboard";
 
 export const dynamic = "force-dynamic";
 
-export const GET = () => withStore((store) => dashboard(store));
+/** ?mode=cycle for the pay-cycle view (falls back to month if not set up). */
+export const GET = (req: Request) =>
+  withStore((store) => dashboard(store, new URL(req.url).searchParams.get("mode") === "cycle" ? "cycle" : "month"));

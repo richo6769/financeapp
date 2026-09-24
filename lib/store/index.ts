@@ -46,14 +46,18 @@ export async function getOwnerStore(): Promise<Store> {
   }
   const sb = createServiceClient();
   if (!env.ownerEmail) throw new Error("OWNER_EMAIL must be set for cron sync");
-  let userId: string | undefined;
-  for (let page = 1; page < 20 && !userId; page++) {
+  // The cron only ever acts for the owner: the one user whose email is OWNER_EMAIL.
+  const matches: string[] = [];
+  for (let page = 1; page < 50; page++) {
     const { data, error } = await sb.auth.admin.listUsers({ page, perPage: 100 });
     if (error) throw new Error(`Supabase listUsers: ${error.message}`);
-    userId = data.users.find((u) => u.email?.toLowerCase() === env.ownerEmail)?.id;
+    matches.push(...data.users.filter((u) => u.email?.toLowerCase() === env.ownerEmail).map((u) => u.id));
     if (data.users.length < 100) break;
   }
-  if (!userId) throw new Error(`No Supabase user for OWNER_EMAIL (${env.ownerEmail}). Log in once first.`);
+  if (matches.length !== 1) {
+    throw new Error(matches.length ? "More than one user has OWNER_EMAIL" : `No Supabase user for OWNER_EMAIL. Sign in once first.`);
+  }
+  const userId = matches[0];
   const store = new SupabaseStore(sb, userId);
   await ensureSeeded(store);
   return store;

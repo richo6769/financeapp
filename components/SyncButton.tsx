@@ -8,15 +8,21 @@ export const SYNC_EVENT = "ledger:synced";
 export default function SyncButton() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
   async function sync() {
     setBusy(true);
     setMsg(null);
     try {
       const log = await api<{ status: string; transactions_new: number; error: string | null }>("/api/sync", { method: "POST" });
-      setMsg(log.status === "success" ? `+${log.transactions_new} new` : `Failed: ${log.error}`);
+      if (log.status !== "success") {
+        setFailed(log.error ?? "Sync failed");
+        return;
+      }
+      setFailed(null);
+      setMsg(`+${log.transactions_new} new`);
       window.dispatchEvent(new Event(SYNC_EVENT));
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : "Sync failed");
+      setFailed(e instanceof Error ? e.message : "Sync failed");
     } finally {
       setBusy(false);
       setTimeout(() => setMsg(null), 4000);
@@ -24,6 +30,11 @@ export default function SyncButton() {
   }
   return (
     <div className="flex items-center gap-2">
+      {failed && (
+        <a href="/settings" className="max-w-[40vw] truncate text-xs text-danger" role="alert" title={failed}>
+          ⚠ Sync failed
+        </a>
+      )}
       {msg && <span className="text-xs text-muted" role="status">{msg}</span>}
       <button className="btn" onClick={sync} disabled={busy}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={busy ? "animate-spin" : ""} aria-hidden>

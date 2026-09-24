@@ -8,10 +8,12 @@ import type { Cat } from "@/components/types";
 
 type Budget = { category_id: string; amount_monthly: number; period: string; period_amount: number };
 type Data = { categories: Cat[]; budgets: Budget[]; overall_monthly_cap: number | null };
+type Caps = { all: { category_id: string; amount: number }[]; caps: { category_id: string; spent: number; pct: number; level: string }[] };
 const PERIODS = ["monthly", "weekly", "fortnightly", "yearly"] as const;
 
 export default function Budgets() {
   const { data, error, reload } = useApi<Data>("/api/categories");
+  const caps = useApi<Caps>("/api/caps");
   const [newName, setNewName] = useState("");
   const [newParent, setNewParent] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
@@ -30,7 +32,7 @@ export default function Budgets() {
     <div className="space-y-4">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Budgets & categories</h1>
+          <h1 className="text-xl font-semibold">Budgets & caps</h1>
           <p className="text-sm text-muted">Category budgets total {money(totalBudgets, true)}/month.</p>
         </div>
         <Link href="/rules" className="btn">Rules →</Link>
@@ -43,6 +45,15 @@ export default function Budgets() {
         {roots.map((r) => (
           <li key={r.id} className="py-2">
             <CategoryRow cat={r} budget={data.budgets.find((b) => b.category_id === r.id)} onChanged={(m) => { if (m) flash(m); reload(); }} />
+            {r.kind === "expense" && (
+              <WeeklyCap
+                categoryId={r.id}
+                name={r.name}
+                value={caps.data?.all.find((c) => c.category_id === r.id)?.amount ?? null}
+                status={caps.data?.caps.find((c) => c.category_id === r.id)}
+                onSaved={(m) => { flash(m); caps.reload(); }}
+              />
+            )}
             {data.categories
               .filter((s) => s.parent_id === r.id)
               .map((s) => (
@@ -162,6 +173,47 @@ function CategoryRow({ cat, budget, onChanged }: { cat: Cat; budget?: Budget; on
       {budget && budget.period !== "monthly" && <span className="w-full pl-5 text-xs text-muted">= {money(budget.amount_monthly)}/month</span>}
       {!cat.is_system && (
         <button className="text-xs text-muted hover:text-danger" onClick={remove} aria-label={`Delete ${cat.name}`}>Delete</button>
+      )}
+    </div>
+  );
+}
+
+function WeeklyCap({
+  categoryId,
+  name,
+  value,
+  status,
+  onSaved,
+}: {
+  categoryId: string;
+  name: string;
+  value: number | null;
+  status?: { spent: number; pct: number; level: string };
+  onSaved: (m: string) => void;
+}) {
+  const [amount, setAmount] = useState(value == null ? "" : String(value));
+  const dirty = amount !== (value == null ? "" : String(value));
+  return (
+    <div className="flex items-center justify-end gap-1 pb-1 pl-5 text-xs text-muted">
+      <span className="mr-auto">
+        Weekly cap{status && <> · {money(status.spent)} this week ({status.pct}%)</>}
+      </span>
+      <input className="input w-20 py-0.5 text-xs" inputMode="decimal" placeholder="none" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label={`${name} weekly cap`} />
+      <span>/wk</span>
+      {dirty && (
+        <button
+          className="btn-primary px-2 py-0.5 text-xs"
+          onClick={async () => {
+            try {
+              await api("/api/caps", { method: "PUT", json: { category_id: categoryId, amount: amount === "" ? null : Number(amount) } });
+              onSaved(amount === "" ? `${name}: weekly cap removed` : `${name}: weekly cap ${money(Number(amount))} (Mon–Sun)`);
+            } catch (e) {
+              onSaved(e instanceof Error ? e.message : "Failed");
+            }
+          }}
+        >
+          Save
+        </button>
       )}
     </div>
   );

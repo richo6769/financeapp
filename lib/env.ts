@@ -31,8 +31,14 @@ export function isSupabaseConfigured(): boolean {
   return Boolean(env.supabaseUrl && env.supabaseAnonKey);
 }
 
+/**
+ * Claude needs a key. On a hosted deployment it also needs Supabase: without
+ * it there's no login, so anyone with the URL could spend your API credit.
+ */
 export function isClaudeConfigured(): boolean {
-  return Boolean(env.anthropicKey);
+  if (!env.anthropicKey) return false;
+  if (process.env.VERCEL && !isSupabaseConfigured()) return false;
+  return true;
 }
 
 /**

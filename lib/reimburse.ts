@@ -2,9 +2,11 @@ import "server-only";
 import type { Filter, Store } from "@/lib/store/types";
 import type { ReimbursementLink, Transaction } from "@/lib/types";
 import { addDays, todayLocal } from "@/lib/dates";
-import { round2 } from "@/lib/money";
+import { formatCents, fromCents, toCents, type Cents } from "@/lib/money";
+import { applyLinkToIou, reverseIouForLink } from "@/lib/iou";
 import { normalise } from "@/lib/categorise";
 import { UserError } from "@/lib/errors";
+import { clip } from "@/lib/text";
 
 /**
  * "Net off": link incoming money (credits) to the expenses it reimburses.
@@ -15,18 +17,18 @@ import { UserError } from "@/lib/errors";
  */
 
 export interface LinkTotals {
-  /** expense id -> total reimbursed (positive) */
-  toExpense: Map<string, number>;
-  /** incoming id -> total allocated (positive) */
-  fromIncome: Map<string, number>;
+  /** expense id -> total reimbursed, in cents (positive) */
+  toExpense: Map<string, Cents>;
+  /** incoming id -> total allocated, in cents (positive) */
+  fromIncome: Map<string, Cents>;
 }
 
 export function linkTotals(links: ReimbursementLink[]): LinkTotals {
   const toExpense = new Map<string, number>();
   const fromIncome = new Map<string, number>();
   for (const l of links) {
-    toExpense.set(l.expense_id, round2((toExpense.get(l.expense_id) ?? 0) + Number(l.amount)));
-    fromIncome.set(l.income_id, round2((fromIncome.get(l.income_id) ?? 0) + Number(l.amount)));
+    toExpense.set(l.expense_id, (toExpense.get(l.expense_id) ?? 0) + toCents(l.amount));
+    fromIncome.set(l.income_id, (fromIncome.get(l.income_id) ?? 0) + toCents(l.amount));
   }
   return { toExpense, fromIncome };
 }
@@ -35,11 +37,16 @@ export async function loadLinkTotals(store: Store): Promise<LinkTotals> {
   return linkTotals(await store.select("reimbursement_links"));
 }
 
-/** Signed amount after netting: debits move toward 0, credits lose allocations. */
-export function netAmount(t: Pick<Transaction, "id" | "amount">, totals: LinkTotals): number {
-  if (t.amount < 0) return round2(t.amount + (totals.toExpense.get(t.id) ?? 0));
-  if (t.amount > 0) return round2(t.amount - (totals.fromIncome.get(t.id) ?? 0));
+/** Signed amount after netting, in cents: debits move toward 0, credits lose allocations. */
+export function netCents(t: Pick<Transaction, "id" | "amount">, totals: LinkTotals): Cents {
+  const c = toCents(t.amount);
+  if (c < 0) return c + (totals.toExpense.get(t.id) ?? 0);
+  if (c > 0) return c - (totals.fromIncome.get(t.id) ?? 0);
   return 0;
+}
+
+export function netAmount(t: Pick<Transaction, "id" | "amount">, totals: LinkTotals): number {
+  return fromCents(netCents(t, totals));
 }
 
 /** Replace `amount` with the net amount (keeps the original as gross_amount). */
@@ -49,15 +56,19 @@ export function applyNet<T extends Transaction>(txns: T[], totals: LinkTotals): 
 }
 
 /** What's left to link: for an expense, unreimbursed; for a credit, unallocated. */
+export function remainingCents(t: Pick<Transaction, "id" | "amount">, totals: LinkTotals): Cents {
+  return Math.abs(netCents(t, totals));
+}
+
 export function remainingOf(t: Pick<Transaction, "id" | "amount">, totals: LinkTotals): number {
-  return Math.abs(netAmount(t, totals));
+  return fromCents(remainingCents(t, totals));
 }
 
 const label = (t: Transaction) => t.merchant_name ?? t.description;
 
 export async function linkReimbursement(
   store: Store,
-  input: { expense_id: string; income_id: string; amount?: number },
+  input: { expense_id: string; income_id: string; amount?: number; iou_id?: string | null },
 ): Promise<{
   link: ReimbursementLink;
   amount: number;
@@ -74,50 +85,77 @@ export async function linkReimbursement(
   if (expense.amount >= 0) throw new UserError("Only an expense (money out) can be netted off");
   if (income.amount <= 0) throw new UserError("Only incoming money can be linked to an expense");
 
+  if (expense.removed_at || income.removed_at) throw new UserError("That transaction was removed by the bank");
+  if (input.amount != null && !(Number.isFinite(input.amount) && input.amount > 0)) throw new UserError("Amount must be more than $0");
+
   const links = await store.select("reimbursement_links");
   const totals = linkTotals(links);
-  const expenseLeft = remainingOf(expense, totals);
-  const incomeLeft = remainingOf(income, totals);
-  const amount = round2(input.amount ?? Math.min(expenseLeft, incomeLeft));
-  if (!(amount > 0)) {
+  const expenseLeft = remainingCents(expense, totals);
+  const incomeLeft = remainingCents(income, totals);
+  const amountC = input.amount != null ? toCents(input.amount) : Math.min(expenseLeft, incomeLeft);
+  if (amountC <= 0) {
     throw new UserError(
       expenseLeft <= 0 ? `${label(expense)} is already fully netted off` : `That payment is already fully allocated`,
     );
   }
-  if (amount > expenseLeft + 0.001) {
-    throw new UserError(`Can't link ${amount.toFixed(2)}: only ${expenseLeft.toFixed(2)} of ${label(expense)} is left to net off`);
+  if (amountC > expenseLeft) {
+    throw new UserError(`Can't link ${formatCents(amountC)}: only ${formatCents(expenseLeft)} of ${label(expense)} is left to net off`);
   }
-  if (amount > incomeLeft + 0.001) {
-    throw new UserError(`Can't link ${amount.toFixed(2)}: only ${incomeLeft.toFixed(2)} of ${label(income)} is unallocated`);
+  if (amountC > incomeLeft) {
+    throw new UserError(`Can't link ${formatCents(amountC)}: only ${formatCents(incomeLeft)} of ${label(income)} is unallocated`);
   }
 
   const existing = links.find((l) => l.expense_id === expense.id && l.income_id === income.id);
   let link: ReimbursementLink;
   if (existing) {
-    const total = round2(Number(existing.amount) + amount);
+    const total = fromCents(toCents(existing.amount) + amountC);
     await store.update("reimbursement_links", { eq: { id: existing.id } }, { amount: total });
     link = { ...existing, amount: total };
   } else {
-    [link] = await store.insert("reimbursement_links", [{ expense_id: expense.id, income_id: income.id, amount }]);
+    [link] = await store.insert("reimbursement_links", [
+      { expense_id: expense.id, income_id: income.id, amount: fromCents(amountC), iou_id: null, iou_amount: 0 },
+    ]);
+  }
+  // Settle (part of) a matching open IOU on this expense, if any.
+  const settled = await applyLinkToIou(store, { expense, income, amountCents: amountC, preferIouId: link.iou_id ?? input.iou_id });
+  if (settled) {
+    const patch = { iou_id: settled.iouId, iou_amount: fromCents(toCents(link.iou_amount ?? 0) + settled.appliedCents) };
+    await store.update("reimbursement_links", { eq: { id: link.id } }, patch);
+    link = { ...link, ...patch };
   }
   const after = linkTotals(existing ? links.map((l) => (l.id === link.id ? link : l)) : [...links, link]);
   return {
     link,
-    amount,
-    expense: { id: expense.id, name: label(expense), gross: Math.abs(expense.amount), net: Math.abs(netAmount(expense, after)) },
-    income: { id: income.id, name: label(income), amount: income.amount, unallocated: remainingOf(income, after) },
+    amount: fromCents(amountC),
+    expense: { id: expense.id, name: clip(label(expense)), gross: Math.abs(expense.amount), net: Math.abs(netAmount(expense, after)) },
+    income: { id: income.id, name: clip(label(income)), amount: income.amount, unallocated: remainingOf(income, after) },
   };
 }
 
 export async function unlinkReimbursement(store: Store, linkId: string): Promise<boolean> {
+  const [link] = await store.select("reimbursement_links", { eq: { id: linkId } });
+  if (!link) return false;
+  await reverseIouForLink(store, link);
   return (await store.remove("reimbursement_links", { eq: { id: linkId } })) > 0;
 }
 
-/** Remove links touching these transactions (the DB cascades; the JSON store doesn't). */
+/**
+ * Remove links and dependants of these transactions (Postgres cascades; the
+ * JSON store doesn't). IOU balances settled by removed links are restored.
+ */
 export async function removeLinksFor(store: Store, txnIds: string[]): Promise<void> {
   if (!txnIds.length) return;
+  const links = [
+    ...(await store.select("reimbursement_links", { in: { expense_id: txnIds } })),
+    ...(await store.select("reimbursement_links", { in: { income_id: txnIds } })),
+  ];
+  for (const l of links) await reverseIouForLink(store, l);
   await store.remove("reimbursement_links", { in: { expense_id: txnIds } });
   await store.remove("reimbursement_links", { in: { income_id: txnIds } });
+  await store.remove("netoff_suggestions", { in: { expense_id: txnIds } });
+  await store.remove("netoff_suggestions", { in: { income_id: txnIds } });
+  await store.remove("ious", { in: { expense_id: txnIds } });
+  await store.remove("trip_transactions", { in: { transaction_id: txnIds } });
 }
 
 export interface LinkView {
@@ -255,11 +293,11 @@ export async function matchAndLink(
   ]);
   const near = (t: Transaction, date?: string) =>
     !date || (t.local_date >= addDays(date, -3) && t.local_date <= addDays(date, 3));
-  const amt = (t: Transaction, want?: number) => want == null || Math.abs(Math.abs(t.amount) - want) < 0.01;
+  const amt = (t: Transaction, want?: number) => want == null || Math.abs(toCents(t.amount)) === toCents(want);
   const brief = (t: Transaction): Brief => ({
     id: t.id,
     date: t.local_date,
-    description: t.merchant_name ?? t.description,
+    description: clip(t.merchant_name ?? t.description),
     amount: t.amount,
     remaining: remainingOf(t, totals),
   });
@@ -270,6 +308,7 @@ export async function matchAndLink(
         (t) =>
           t.amount < 0 &&
           !t.is_transfer &&
+          !t.removed_at &&
           remainingOf(t, totals) > 0 &&
           (!q.expense || nameMatches(q.expense, t)) &&
           near(t, q.expense_date) &&
@@ -287,13 +326,14 @@ export async function matchAndLink(
   const single = expenses.length === 1 ? expenses[0] : undefined;
   // (null → link the smaller of the two remainders)
   const amount: number | null =
-    q.amount ?? (q.fraction != null && single ? round2(Math.abs(single.amount) * q.fraction) : null);
+    q.amount ?? (q.fraction != null && single ? fromCents(Math.round(Math.abs(toCents(single.amount)) * q.fraction)) : null);
 
   let incomes = q.income_id
     ? all.filter((t) => t.id === q.income_id)
     : all.filter(
         (t) =>
           t.amount > 0 &&
+          !t.removed_at &&
           remainingOf(t, totals) > 0 &&
           (!q.income_from || nameMatches(q.income_from, t, true)) &&
           near(t, q.income_date) &&
@@ -306,7 +346,7 @@ export async function matchAndLink(
   }
   // "Half of dinner": prefer payments that fit the computed share.
   if (!q.income_id && amount != null && incomes.length > 1) {
-    const fit = incomes.filter((t) => Math.abs(remainingOf(t, totals) - amount!) < 1);
+    const fit = incomes.filter((t) => Math.abs(remainingCents(t, totals) - toCents(amount!)) < 100);
     if (fit.length) incomes = fit;
   }
   if (!incomes.length) {
@@ -329,4 +369,27 @@ export async function matchAndLink(
     amount: amount ?? undefined,
   });
   return { status: "linked", result };
+}
+
+/** Expenses (last 6 months, newest first) matching a name/amount/date, for chat tools. */
+export async function findExpenseCandidates(
+  store: Store,
+  q: { expense?: string; expense_amount?: number; expense_date?: string; expense_id?: string },
+): Promise<Transaction[]> {
+  if (q.expense_id) return store.select("transactions", { eq: { id: q.expense_id } });
+  const today = todayLocal();
+  const rows = await store.select(
+    "transactions",
+    { gte: { local_date: addDays(today, -180) } },
+    { order: { column: "date", ascending: false } },
+  );
+  return rows.filter(
+    (t) =>
+      t.amount < 0 &&
+      !t.is_transfer &&
+      !t.removed_at &&
+      (!q.expense || nameMatches(q.expense, t)) &&
+      (!q.expense_date || (t.local_date >= addDays(q.expense_date, -3) && t.local_date <= addDays(q.expense_date, 3))) &&
+      (q.expense_amount == null || -toCents(t.amount) === toCents(q.expense_amount)),
+  );
 }

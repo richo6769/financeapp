@@ -11,36 +11,90 @@ export function normalise(s: string | null | undefined): string {
 
 type Matchable = Pick<Transaction, "description" | "merchant_name">;
 
-export function ruleMatches(rule: Pick<Rule, "pattern" | "field" | "match_type">, t: Matchable): boolean {
+/** Longest regex pattern a user may save, and the most text we test it against. */
+export const MAX_REGEX_LENGTH = 100;
+const MAX_MATCH_TEXT = 200;
+
+/**
+ * JavaScript can't time out a regex, so we stop catastrophic backtracking up
+ * front: patterns are length-limited, and nested or overlapping quantifiers
+ * like (a+)+, (a*)*, (a|a)* and (x{2,})+ are rejected, as are backreferences.
+ * Input text is also capped, so worst-case work per rule is bounded.
+ */
+export function unsafeRegexReason(pattern: string): string | null {
+  if (pattern.length > MAX_REGEX_LENGTH) return `Regex is too long (max ${MAX_REGEX_LENGTH} characters)`;
+  try {
+    new RegExp(pattern, "i");
+  } catch {
+    return "Invalid regular expression";
+  }
+  if (/\\[1-9]|\\k</.test(pattern)) return "Backreferences aren't allowed";
+  // A group that contains a quantifier (or alternation) and is itself quantified.
+  const group = /\((?:[^()\\]|\\.)*(?:[+*]|\{\d+,?\d*\}|\|)(?:[^()\\]|\\.)*\)(?:[+*]|\{\d+,?\d*\})/;
+  if (group.test(pattern)) return "Nested or overlapping repetition like (a+)+ isn't allowed";
+  if ((pattern.match(/[+*]|\{\d+,\d*\}/g) ?? []).length > 6) return "Too many repetition operators";
+  return null;
+}
+
+const regexCache = new Map<string, RegExp | null>();
+function compileSafe(pattern: string): RegExp | null {
+  if (!regexCache.has(pattern)) {
+    regexCache.set(pattern, unsafeRegexReason(pattern) ? null : new RegExp(pattern, "i"));
+  }
+  return regexCache.get(pattern)!;
+}
+
+const hasWord = (text: string, phrase: string) => ` ${text} `.includes(` ${phrase} `);
+
+/**
+ * Patterns of ≤5 characters, and a few that commonly appear inside other
+ * words/names, default to whole-word matching.
+ */
+export const WORD_MATCH_PATTERNS = [
+  "ami", "bp", "gull", "tower", "neon", "spark", "farmers", "mercury", "genesis", "subway", "state insurance",
+];
+
+export function defaultMatchType(pattern: string): "word" | "contains" {
+  const n = normalise(pattern);
+  return n.length <= 5 || WORD_MATCH_PATTERNS.includes(n) ? "word" : "contains";
+}
+
+export function ruleMatches(
+  rule: Pick<Rule, "pattern" | "field" | "match_type"> & { exclude_words?: string | null },
+  t: Matchable,
+): boolean {
   const texts =
     rule.field === "merchant"
       ? [t.merchant_name]
       : rule.field === "description"
         ? [t.description]
         : [t.merchant_name, t.description];
+  const excludes = (rule.exclude_words ?? "")
+    .split(",")
+    .map((w) => normalise(w))
+    .filter(Boolean);
   for (const raw of texts) {
     if (!raw) continue;
+    if (excludes.length && excludes.some((w) => hasWord(normalise(raw), w))) continue;
     if (rule.match_type === "regex") {
-      try {
-        if (new RegExp(rule.pattern, "i").test(raw)) return true;
-      } catch {
-        /* invalid regex never matches */
-      }
+      const re = compileSafe(rule.pattern);
+      if (re && re.test(raw.slice(0, MAX_MATCH_TEXT))) return true;
       continue;
     }
     const text = normalise(raw);
     const pat = normalise(rule.pattern);
     if (!pat) continue;
-    if (rule.match_type === "exact") {
-      if (text === pat) return true;
-      continue;
-    }
-    // contains: short patterns (e.g. "bp") must match whole words; longer
-    // ones match substrings, also ignoring spaces ("paknsave" ~ "pak n save").
-    if (pat.length < 4) {
-      if (` ${text} `.includes(` ${pat} `)) return true;
-    } else if (text.includes(pat) || text.replaceAll(" ", "").includes(pat.replaceAll(" ", ""))) {
-      return true;
+    switch (rule.match_type) {
+      case "exact":
+        if (text === pat) return true;
+        break;
+      case "word":
+        // Whole words only: "ami" ≠ "MIAMI"/"SALAMI", "spark" ≠ "SPARKLING".
+        if (hasWord(text, pat)) return true;
+        break;
+      default:
+        // contains: substring, also ignoring spaces ("paknsave" ~ "pak n save").
+        if (text.includes(pat) || text.replaceAll(" ", "").includes(pat.replaceAll(" ", ""))) return true;
     }
   }
   return false;

@@ -1,6 +1,7 @@
 import "server-only";
 import type { CategoryKind } from "@/lib/types";
 import type { Store } from "@/lib/store/types";
+import { defaultMatchType } from "@/lib/categorise";
 
 export const DEFAULT_CATEGORIES: { name: string; kind: CategoryKind; color: string }[] = [
   { name: "Groceries", kind: "expense", color: "#16a34a" },
@@ -33,7 +34,8 @@ export const SYSTEM_CATEGORIES = ["Salary", "Transfers"];
  * "uber"). Rule priority = 100 + index; lower wins. Keep in sync with
  * supabase/migrations/20260924000100_seed_defaults.sql.
  */
-export const DEFAULT_RULES: { pattern: string; category: string }[] = [
+type SeedRule = { pattern: string; category: string };
+const RAW_RULES: SeedRule[] = [
   // Takeaways first: "uber eats" must beat Transport/Fuel's "uber".
   ...["uber eats", "doordash", "delivereasy", "mcdonalds", "kfc", "burger king", "dominos", "pizza hut", "subway"].map(
     (pattern) => ({ pattern, category: "Takeaways" }),
@@ -72,6 +74,19 @@ export const DEFAULT_RULES: { pattern: string; category: string }[] = [
   ...["deloitte", "zuru"].map((pattern) => ({ pattern, category: "Salary" })),
 ];
 
+/** Words that veto a match, e.g. "SKY TOWER" isn't Tower Insurance. */
+const EXCLUDES: Record<string, string> = {
+  tower: "sky",
+  farmers: "market,markets",
+};
+
+/**
+ * Whole-word matching for patterns of ≤5 characters and ones that often
+ * appear inside other words; substring ("contains") for everything else.
+ */
+export const DEFAULT_RULES: (SeedRule & { match_type: "word" | "contains"; exclude_words: string | null })[] =
+  RAW_RULES.map((r) => ({ ...r, match_type: defaultMatchType(r.pattern), exclude_words: EXCLUDES[r.pattern] ?? null }));
+
 const seeded = new Set<string>();
 
 /** Idempotently seed default categories + starter rules for a user. */
@@ -96,7 +111,8 @@ export async function ensureSeeded(store: Store): Promise<void> {
       DEFAULT_RULES.map((r, i) => ({
         pattern: r.pattern,
         field: "any" as const,
-        match_type: "contains" as const,
+        match_type: r.match_type,
+        exclude_words: r.exclude_words,
         category_id: byName.get(r.category)!,
         priority: 100 + i,
       })),

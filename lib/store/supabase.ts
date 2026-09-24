@@ -80,14 +80,18 @@ export class SupabaseStore implements Store {
 
   async upsert<K extends TableName>(
     table: K,
-    rows: (NewRow<Tables[K]> & { id?: string })[],
+    rows: Partial<Tables[K]>[],
     onConflict: string,
+    opts?: { ignoreDuplicates?: boolean },
   ): Promise<Tables[K][]> {
     const out: Tables[K][] = [];
     for (let i = 0; i < rows.length; i += 500) {
       const payload = rows.slice(i, i + 500).map((r) => ({ ...r, user_id: this.userId }));
       const data = check(
-        await this.sb.from(table).upsert(payload, { onConflict }).select("*"),
+        await this.sb
+          .from(table)
+          .upsert(payload, { onConflict, ignoreDuplicates: opts?.ignoreDuplicates ?? false })
+          .select("*"),
         `upsert ${table}`,
       ) as Tables[K][];
       out.push(...data);

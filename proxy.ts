@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-const PUBLIC = ["/login", "/auth/callback", "/api/cron/", "/api/status", "/manifest.webmanifest", "/sw.js", "/icons/", "/offline"];
+const PUBLIC = ["/login", "/auth/callback", "/api/cron/", "/manifest.webmanifest", "/sw.js", "/icons/", "/offline"];
 
 /**
  * Refreshes the Supabase session cookie and gates every page behind login.
@@ -28,7 +28,21 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  if (!user && !PUBLIC.some((p) => path.startsWith(p))) {
+  // Single-user app: a session for any other email is treated as signed out.
+  // (Routes enforce this again server-side via getStore.)
+  const owner = process.env.OWNER_EMAIL?.trim().toLowerCase();
+  const allowed = Boolean(user && owner && user.email?.toLowerCase() === owner);
+  if (user && !allowed && !path.startsWith("/login") && !path.startsWith("/auth/")) {
+    await supabase.auth.signOut();
+    if (path.startsWith("/api/")) return NextResponse.json({ error: "This account isn't allowed" }, { status: 403 });
+    const login = request.nextUrl.clone();
+    login.pathname = "/login";
+    login.search = "?error=This%20account%20isn%27t%20allowed";
+    const res = NextResponse.redirect(login);
+    response.cookies.getAll().forEach((c) => res.cookies.set(c));
+    return res;
+  }
+  if (!allowed && !PUBLIC.some((p) => path.startsWith(p))) {
     if (path.startsWith("/api/")) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
     const login = request.nextUrl.clone();
     login.pathname = "/login";

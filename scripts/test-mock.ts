@@ -14,7 +14,6 @@ import { runSync } from "@/lib/sync";
 import { addDays, todayLocal, resolvePeriod } from "@/lib/dates";
 import {
   budgetStatus,
-  dashboard,
   findTransactions,
   setBudget,
   setTransactionCategory,
@@ -23,6 +22,7 @@ import {
   BULK_CONFIRM_THRESHOLD,
 } from "@/lib/services";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
+import { dashboard } from "@/lib/dashboard";
 import { executeTool, TOOL_DEFS } from "@/lib/chat/tools";
 import { runMockPlanner } from "@/lib/chat/mock";
 import { priorTokensFrom } from "@/lib/chat/agent";
@@ -59,7 +59,7 @@ async function main() {
 
   // ------------------------------------------------------------------ sync
   console.log("Sync");
-  const client = new MockAkahuClient();
+  let client = new MockAkahuClient();
   const first = await runSync(store, client, "test");
   assert.equal(first.status, "success", first.error ?? "");
   assert.equal(first.accounts_synced, 3);
@@ -93,6 +93,8 @@ async function main() {
   const settledNow = await store.select("transactions", { gte: { local_date: addDays(todayLocal(), -1) } });
   assert.ok(settledNow.length > 0, "yesterday's pending settled into transactions");
   ok(`pending replaced (${pendingBefore.length} → ${pendingAfter.length}); previously pending items settled with ids`);
+  // Akahu never "un-settles": keep syncing from the later clock from here on.
+  client = future;
 
   // ------------------------------------------------------- categorisation
   console.log("Categorisation");
@@ -181,9 +183,9 @@ async function main() {
 
   // ------------------------------------------------------------ chat tools
   console.log("Chatbot tools (offline planner → real tool layer)");
-  assert.equal(TOOL_DEFS.length, 10);
+  assert.equal(TOOL_DEFS.length, 18);
   assert.ok(TOOL_DEFS.every((t) => t.input_schema.type === "object"));
-  ok("10 tool definitions with object JSON schemas");
+  ok("18 tool definitions with object JSON schemas");
 
   const history: ChatMessage[] = [];
   const say = async (text: string) => {
@@ -316,6 +318,9 @@ async function netOffTests() {
     is_transfer: false,
     is_manual: false,
     notes: null,
+    foreign_amount: null,
+    foreign_currency: null,
+    removed_at: null,
   });
   const rows = await store2.insert("transactions", [
     mk("SNUS DIRECT", -365, 10, "Other"),

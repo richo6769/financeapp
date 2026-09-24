@@ -30,6 +30,8 @@ export interface AkahuTransaction {
     code?: string;
     reference?: string;
     other_account?: string;
+    /** Present for foreign-currency transactions. */
+    conversion?: { amount: number; currency: string; rate?: number; fee?: number };
   };
 }
 

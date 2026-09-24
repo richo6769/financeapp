@@ -30,11 +30,15 @@ export interface Store {
     opts?: SelectOptions<Tables[K]>,
   ): Promise<Tables[K][]>;
   insert<K extends TableName>(table: K, rows: NewRow<Tables[K]>[]): Promise<Tables[K][]>;
-  /** Insert or update rows matching on `onConflict` columns (comma separated). */
+  /**
+   * Insert or update rows matching on `onConflict` columns (comma separated).
+   * With ignoreDuplicates, existing rows are left untouched (and not returned).
+   */
   upsert<K extends TableName>(
     table: K,
-    rows: (NewRow<Tables[K]> & { id?: string })[],
+    rows: Partial<Tables[K]>[],
     onConflict: string,
+    opts?: { ignoreDuplicates?: boolean },
   ): Promise<Tables[K][]>;
   update<K extends TableName>(
     table: K,

@@ -84,6 +84,8 @@ export function monthProgress(today: string = todayLocal()) {
 }
 
 export type PeriodPreset =
+  | "this_week"
+  | "last_week"
   | "this_month"
   | "last_month"
   | "last_3_months"
@@ -107,6 +109,12 @@ export function resolvePeriod(p: PeriodPreset, today: string = todayLocal()): { 
       return { from: addDays(addMonths(today, -6), 1), to: today };
     case "last_12_months":
       return { from: addDays(addMonths(today, -12), 1), to: today };
+    case "this_week":
+      return { from: weekStart(today), to: today };
+    case "last_week": {
+      const lw = addDays(weekStart(today), -7);
+      return { from: lw, to: addDays(lw, 6) };
+    }
     case "year_to_date":
       return { from: `${today.slice(0, 4)}-01-01`, to: today };
     case "all_time":
@@ -114,16 +122,64 @@ export function resolvePeriod(p: PeriodPreset, today: string = todayLocal()): { 
   }
 }
 
-/** Accepts "yesterday", "today", or YYYY-MM-DD. */
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * Accepts "today", "yesterday", YYYY-MM-DD, "26 Dec", "Dec 26", "26 December
+ * 2026". A day+month without a year resolves to the nearest such date that is
+ * not more than ~2 months in the past (so "26 Dec" in September = this Dec).
+ */
 export function parseLocalDate(input: string | undefined, today: string = todayLocal()): string {
   if (!input) return today;
-  const s = input.trim().toLowerCase();
+  const s = input.trim().toLowerCase().replace(/(\d)(st|nd|rd|th)\b/, "$1");
   if (s === "today") return today;
   if (s === "yesterday") return addDays(today, -1);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const d = new Date(input);
-  if (!isNaN(d.getTime())) return toLocalDate(d);
-  throw new Error(`Unrecognised date: ${input}`);
+  if (s === "tomorrow") return addDays(today, 1);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split("-").map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > daysInMonth(y, m)) throw new Error(`Invalid date: ${input}`);
+    return s;
+  }
+  const dm = s.match(/^(\d{1,2})\s+([a-z]{3,9})\.?(?:\s+(\d{4}))?$/) ?? s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?$/);
+  if (dm) {
+    const [a, b, yr] = [dm[1], dm[2], dm[3]];
+    const monthWord = /\d/.test(a) ? b : a;
+    const day = Number(/\d/.test(a) ? a : b);
+    const month = MONTHS.indexOf(monthWord.slice(0, 3)) + 1;
+    if (month > 0) {
+      const pick = (y: number) => {
+        if (day < 1 || day > daysInMonth(y, month)) throw new Error(`Invalid date: ${input}`);
+        return `${y}-${pad(month)}-${pad(day)}`;
+      };
+      if (yr) return pick(Number(yr));
+      const y = Number(today.slice(0, 4));
+      const candidate = pick(y);
+      return daysBetween(candidate, today) > 62 ? pick(y + 1) : candidate;
+    }
+  }
+  throw new Error(`Unrecognised date: ${input} (use YYYY-MM-DD)`);
+}
+
+/** Day of week for a local date: 0 = Sunday … 6 = Saturday. */
+export function weekday(ld: string): number {
+  const [y, m, d] = parts(ld);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/** Monday of the NZ week (Mon–Sun) containing this local date. */
+export function weekStart(ld: string): string {
+  return addDays(ld, -((weekday(ld) + 6) % 7));
+}
+
+export function weekEnd(ld: string): string {
+  return addDays(weekStart(ld), 6);
+}
+
+/** Inclusive list of local dates from → to. */
+export function eachDay(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let d = from; d <= to && out.length < 1000; d = addDays(d, 1)) out.push(d);
+  return out;
 }
 
 /** Midday NZ time for a local date, as an ISO timestamp (for manual txns). */

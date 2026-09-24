@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --conditions=react-server scripts/test-mock.ts && tsx --conditions=react-server scripts/test-claude-loop.ts",
+    "test": "tsx --conditions=react-server scripts/test-mock.ts && tsx --conditions=react-server scripts/test-features.ts && tsx --conditions=react-server scripts/test-claude-loop.ts && tsx scripts/test-migrations.ts",
+    "test:race": "bash scripts/test-race.sh",
+    "gen:seed": "tsx --conditions=react-server scripts/gen-seed-sql.ts",
     "icons": "node scripts/make-icons.mjs",
     "check-env": "tsx --conditions=react-server scripts/check-env.ts"
   },
@@ -23,6 +25,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@next/env": "^16.3.6",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^26.6.2",

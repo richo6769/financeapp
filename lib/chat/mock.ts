@@ -93,7 +93,15 @@ export async function runMockPlanner(
   const lastA = [...history].reverse().find((m) => m.role === "assistant");
   const choice = lastA?.tool_calls?.find((c) => (c.result as R)?.needs_choice);
   const nums = lower.match(/^\s*(?:expense\s*)?(\d+)(?:\s*(?:,|and)?\s*(?:payment\s*)?(\d+))?\s*$/);
-  if (choice && nums) {
+  if (choice && nums && choice.name === "create_iou") {
+    const cands = (choice.result as { expense_candidates: { id: string }[] }).expense_candidates;
+    const e = cands[Number(nums[1]) - 1];
+    if (!e) return done("That number isn't in the list.");
+    const r = await call("create_iou", { ...(choice.input as R), expense_id: e.id });
+    if (r.error) return done(`Couldn't add that: ${r.error}`);
+    return done(`Noted: ${r.person} owes you ${formatNZD(r.amount as number)} for ${r.expense} (${r.expense_date}).`);
+  }
+  if (choice && nums && choice.name === "link_reimbursement") {
     const res = choice.result as { expense_candidates: { id: string }[]; income_candidates: { id: string }[] };
     const multiE = res.expense_candidates.length > 1;
     const multiI = res.income_candidates.length > 1;
@@ -125,6 +133,71 @@ export async function runMockPlanner(
       ...(fraction != null ? { fraction } : { amount: Number(share.replace("$", "")) }),
     });
     return done(describeLink(r));
+  }
+
+  // --- IOUs: "Sam owes me 100 for Snus Direct" / "Sam owes me $50"
+  m = t.match(/^(.+?)\s+owes\s+me\s+\$?(\d+(?:\.\d{1,2})?)(?:\s+(?:for|on)\s+(?:the\s+|my\s+)?(.+?))?\.?$/i);
+  if (m && !/^who\b/i.test(m[1])) {
+    if (!m[3]) return done("Which expense is that for? e.g. \"Sam owes me 100 for Snus Direct\".");
+    const r = await call("create_iou", { person: m[1].trim(), amount: Number(m[2]), expense: stripMeal(m[3]) });
+    if (r.error) return done(`Couldn't add that: ${r.error}`);
+    if (r.needs_choice) return done(listChoices(r.expense_candidates as R[], "Which expense?"));
+    return done(`Noted: ${r.person} owes you ${formatNZD(r.amount as number)} for ${r.expense} (${r.expense_date}). It'll settle automatically when you net off their payment.`);
+  }
+  if (/^who\s+owes\s+me|what\s+am\s+i\s+owed|owed\s+to\s+me/i.test(lower)) {
+    const r = await call("list_ious", {});
+    const people = r.people as { person: string; total: number; oldest_days: number }[];
+    if (!people.length) return done("Nobody owes you anything right now.");
+    return done(`You're owed **${formatNZD(r.total_owed as number)}**:\n${people.map((p) => `• ${p.person}: ${formatNZD(p.total)} (oldest ${p.oldest_days} days)`).join("\n")}`);
+  }
+  m = t.match(/^cancel\s+(?:the\s+)?(.+?)(?:'s)?\s+iou(?:\s+(?:for|on)\s+(.+?))?\.?$/i);
+  if (m) {
+    const r = await call("cancel_iou", { person: m[1], expense: m[2] ? stripMeal(m[2]) : undefined });
+    if (r.error) return done(String(r.error));
+    if (r.needs_choice) return done(`More than one IOU matches: ${(r.iou_candidates as R[]).map((c) => `${c.person} ${formatNZD(c.balance as number)} (${c.expense})`).join("; ")}. Say which expense.`);
+    const c = r.cancelled as R;
+    return done(`Cancelled ${c.person}'s IOU of ${formatNZD(c.amount as number)}.`);
+  }
+
+  // --- Trips: "create a trip SEA trip from 26 Dec to 17 Jan, budget 5000"
+  m = t.match(/^(?:create|add|start|plan)\s+(?:a\s+)?(?:new\s+)?trip\s+(?:called\s+)?"?(.+?)"?\s+from\s+(.+?)\s+(?:to|until|till|-)\s+(.+?)(?:,?\s+(?:with\s+a\s+)?budget(?:\s+of)?\s+\$?(\d+(?:\.\d{1,2})?))?\.?$/i);
+  if (m) {
+    const r = await call("create_trip", { name: m[1], start_date: m[2], end_date: m[3], ...(m[4] ? { budget: Number(m[4]) } : {}) });
+    if (r.error) return done(`Couldn't create the trip: ${r.error}`);
+    return done(`Trip **${r.trip}** set up (${r.start_date} → ${r.end_date}${r.budget != null ? `, budget ${formatNZD(r.budget as number)}` : ""}). ${r.transactions_tagged} transactions tagged so far (${formatNZD(r.spent_so_far as number)}). Trip spending is kept out of your monthly budgets.`);
+  }
+  if (/trip/.test(lower) && /how|status|spend|going|tracking/.test(lower)) {
+    const r = await call("trip_status", {});
+    if (r.error) return done(String(r.error));
+    return done(
+      `**${r.trip}** (${r.status}): ${formatNZD(r.spent as number)} spent${r.budget != null ? ` of ${formatNZD(r.budget as number)} — ${formatNZD(r.remaining as number)} left` : ""}. Averaging ${formatNZD(r.daily_average as number)}/day${r.remaining_per_day != null ? `; ${formatNZD(r.remaining_per_day as number)}/day available for the ${r.days_left} days left` : ""}.`,
+    );
+  }
+
+  // --- Weekly caps: "cap bars at 80 a week" / "how am I tracking on liquor this week?"
+  m = t.match(/^(?:set\s+(?:a\s+)?)?(?:weekly\s+)?cap\s+(?:for\s+|on\s+)?(.+?)\s+(?:at|to)\s+\$?(\d+(?:\.\d{1,2})?)(?:\s*(?:a|per|\/)\s*week)?\.?$/i);
+  if (m) {
+    const cat = catFor(m[1]);
+    if (!cat) return done(`I couldn't find a category called "${m[1]}".`);
+    const r = await call("set_weekly_cap", { category: cat.name, amount: Number(m[2]) });
+    return done(r.error ? String(r.error) : `Weekly cap set: ${r.category} ${formatNZD(r.amount as number)} per week (Mon–Sun). I'll warn you at 80% and 100%.`);
+  }
+  m = t.match(/how\s+am\s+i\s+(?:tracking|going|doing)\s+on\s+(.+?)\s+this\s+week\??$/i);
+  if (m) {
+    const cat = catFor(m[1]);
+    if (!cat) return done(`I couldn't find a category called "${m[1]}".`);
+    const r = await call("weekly_status", { category: cat.name });
+    if (r.error) return done(String(r.error));
+    return done(
+      r.weekly_cap != null
+        ? `${r.category} this week: ${formatNZD(r.spent_this_week as number)} of your ${formatNZD(r.weekly_cap as number)} cap (${r.pct}%), ${formatNZD(r.remaining as number)} left with ${r.days_left} days to go.`
+        : `${r.category} this week: ${formatNZD(r.spent_this_week as number)} so far (no weekly cap set).`,
+    );
+  }
+  if (/subscriptions?/.test(lower) && /what|which|list|show|my/.test(lower)) {
+    const r = await call("list_subscriptions", {});
+    const subs = r.subscriptions as R[];
+    return done(`${subs.length} recurring charges, ${formatNZD(r.monthly_total as number)}/month:\n${subs.slice(0, 10).map((x) => `• ${x.name}: ${formatNZD(x.amount as number)} ${x.frequency}`).join("\n")}`);
   }
 
   // --- Rules: "Anything from Z Energy or BP is Fuel"
@@ -299,4 +372,8 @@ function describeLink(r: R): string {
     return lines.join("\n");
   }
   return `Netted off ${formatNZD(r.linked as number)}: ${r.expense}. From ${r.income}.`;
+}
+
+function listChoices(cands: R[], q: string): string {
+  return [q, ...cands.map((c, i) => `${i + 1}. ${c.date} ${c.description} ${formatNZD(Math.abs(c.amount as number))}`)].join("\n");
 }

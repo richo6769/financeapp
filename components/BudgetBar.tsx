@@ -23,7 +23,7 @@ export default function BudgetBar({
           {name}
         </span>
         <span className={over ? "font-semibold text-danger" : "text-muted"}>
-          {money(spent, true)}
+          {spent < 0 ? <span title="Refunds exceeded purchases this period">−{money(-spent, true)} refunds</span> : money(spent, true)}
           {budget != null && <> / {money(budget, true)}</>}
           {over && <span className="ml-1">▲ over</span>}
         </span>
