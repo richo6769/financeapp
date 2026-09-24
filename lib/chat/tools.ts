@@ -18,6 +18,7 @@ import {
   updateCategory,
   UserError,
 } from "@/lib/services";
+import { matchAndLink } from "@/lib/reimburse";
 
 const period = z.enum(["weekly", "fortnightly", "monthly", "yearly"]);
 const presets = z.enum([
@@ -95,6 +96,18 @@ const schemas = {
     date_from: z.string().optional().describe("YYYY-MM-DD"),
     date_to: z.string().optional().describe("YYYY-MM-DD"),
   }),
+  link_reimbursement: z.object({
+    expense: z.string().optional().describe("Merchant/description of the expense, e.g. 'Snus Direct' or 'Soul Bar'"),
+    expense_amount: z.number().positive().optional().describe("Full expense amount if known"),
+    expense_date: z.string().optional().describe("YYYY-MM-DD / 'yesterday' (±3 days is searched)"),
+    income_from: z.string().optional().describe("Who paid me back, as it might appear on the bank line, e.g. 'Sam'"),
+    income_amount: z.number().positive().optional().describe("Amount of the incoming payment if known, e.g. 100"),
+    income_date: z.string().optional().describe("YYYY-MM-DD (±3 days is searched)"),
+    amount: z.number().positive().optional().describe("How much of the payment to apply to this expense. Omit to apply as much as fits."),
+    fraction: z.number().gt(0).max(1).optional().describe("Share of the expense that was paid back, e.g. 0.5 for 'half'"),
+    expense_id: z.string().optional().describe("Exact expense id, when the user picked one from candidates"),
+    income_id: z.string().optional().describe("Exact incoming-payment id, when the user picked one from candidates"),
+  }),
   get_budget_status: z.object({
     month: z.string().optional().describe("YYYY-MM. Defaults to the current month."),
   }),
@@ -116,6 +129,8 @@ const descriptions: Record<ToolName, string> = {
   add_manual_transaction: "Record a cash (or other off-bank) transaction.",
   query_spending:
     "Get exact spending totals from the database, filtered by category and/or merchant over a period. Returns total, monthly breakdown, top merchants and largest transactions. Use for every spending question.",
+  link_reimbursement:
+    "Net off an expense with money someone paid me back (e.g. 'the $100 from Sam was for Snus Direct', 'Jack paid me back half of dinner at Soul Bar'). The expense then counts at its net amount and the linked incoming money is excluded from income. Searches the last 6 months by name, amount and date. If more than one expense or payment matches it links NOTHING and returns needs_choice with candidates — show them (date, description, amount) and ask which, then call again with expense_id/income_id.",
   get_budget_status:
     "Budget vs actual for a month: per-category spent/budget/remaining/pace, total, days left, projection and on_track.",
 };
@@ -269,6 +284,33 @@ export async function executeTool(ctx: ToolContext, name: string, rawInput: unkn
             ? { from: a.date_from ? parseLocalDate(a.date_from) : "1970-01-01", to: a.date_to ? parseLocalDate(a.date_to) : today }
             : resolvePeriod((a.period ?? "this_month") as PeriodPreset, today);
         return await querySpending(store, { ...range, category: a.category, merchant: a.merchant });
+      }
+      case "link_reimbursement": {
+        const a = parsed.data as z.infer<typeof schemas.link_reimbursement>;
+        if (!a.expense && !a.expense_id) return { error: "Say which expense (expense or expense_id)" };
+        if (!a.income_from && !a.income_amount && !a.income_id) return { error: "Say who paid (income_from), the amount, or income_id" };
+        const r = await matchAndLink(store, {
+          ...a,
+          expense_date: a.expense_date ? parseLocalDate(a.expense_date) : undefined,
+          income_date: a.income_date ? parseLocalDate(a.income_date) : undefined,
+        });
+        if (r.status === "not_found") return { error: r.message };
+        if (r.status === "needs_choice") {
+          return {
+            needs_choice: true,
+            instruction: "Nothing linked yet. Ask the user which expense and/or payment they mean, then call again with expense_id and income_id.",
+            expense_candidates: r.expense_candidates,
+            income_candidates: r.income_candidates,
+            amount_to_link: r.amount,
+          };
+        }
+        const x = r.result;
+        return {
+          ok: true,
+          linked: x.amount,
+          expense: `${x.expense.name}: $${x.expense.gross.toFixed(2)} → $${x.expense.net.toFixed(2)} net`,
+          income: `${x.income.name} $${x.income.amount.toFixed(2)} (unallocated $${x.income.unallocated.toFixed(2)})`,
+        };
       }
       case "get_budget_status": {
         const a = parsed.data as z.infer<typeof schemas.get_budget_status>;

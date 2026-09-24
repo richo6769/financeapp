@@ -53,20 +53,29 @@ export function findRule(rules: Rule[], t: Matchable): Rule | undefined {
     .find((r) => ruleMatches(r, t));
 }
 
-/** Map Akahu's NZFCC category / personal-finance group onto our categories. */
+/**
+ * Map Akahu's NZFCC category / personal-finance group onto our categories.
+ * Order matters: the first match wins, so specific labels come first
+ * (pubs/bars → Bars and fast food/takeaways → Takeaways before Eating Out).
+ */
 const AKAHU_HINTS: [RegExp, string][] = [
   [/\b(supermarkets?|grocer(y|ies)?)\b/i, "Groceries"],
-  [/\b(public transport|taxis?|rideshare|parking|tolls?)\b/i, "Transport"],
-  [/\b(fuel|petrol|service stations?)\b/i, "Fuel"],
-  [/\b(cafes?|restaurants?|takeaways?|fast food|bars?|pubs?)\b/i, "Eating Out"],
-  [/\b(electricity|gas supply|water|telecommunications|internet|mobile|utilities)\b/i, "Utilities"],
+  [/\b(pubs?|bars?|nightclubs?|taverns?)\b/i, "Bars"],
+  [/\b(fast food|takeaways?|food delivery)\b/i, "Takeaways"],
+  [/\b(liquor|bottle stores?|wine|beer)\b/i, "Liquor Stores"],
+  [/\b(cafes?|restaurants?|coffee shops?|dining)\b/i, "Eating Out"],
+  [/\b(fuel|petrol|service stations?|public transport|taxis?|rideshare|parking|tolls?)\b/i, "Transport/Fuel"],
+  [/\binsurance\b/i, "Insurance"],
+  [/\b(electricity|gas supply|water|telecommunications|internet|mobile phone|utilities)\b/i, "Bills"],
   [/\b(streaming|subscriptions?|software|music)\b/i, "Subscriptions"],
-  [/\b(gyms?|fitness|pharmac(y|ies)|medical|doctors?|dental|health)\b/i, "Health/Fitness"],
+  [/\b(gyms?|fitness|pharmac(y|ies)|chemists?|medical|doctors?|dental|health|hairdress\w*|barbers?|beauty)\b/i, "Health & Wellness"],
+  [/\b(sport(s|ing)?( goods)?|golf|outdoor)\b/i, "Sports"],
+  [/\b(hardware|home improvement|furniture|homewares?|garden|household)\b/i, "Home Supplies"],
   [/\b(airlines?|hotels?|accommodation|travel)\b/i, "Travel"],
   [/\b(cinemas?|entertainment|events?|tickets?)\b/i, "Entertainment"],
-  [/\b(department stores?|clothing|online shopping|retail|electronics|household)\b/i, "Shopping"],
-  [/\b(rent|mortgage|housing)\b/i, "Rent/Housing"],
-  [/\b(salary|wages?|income|interest)\b/i, "Income"],
+  [/\b(department stores?|clothing|apparel|online shopping|retail|electronics)\b/i, "Clothes/Shopping"],
+  [/\b(rent|rental|mortgage)\b/i, "Rent"],
+  [/\b(salary|wages?|payroll)\b/i, "Salary"],
 ];
 
 export function akahuHintCategory(
@@ -192,7 +201,7 @@ export function categorise(
   }
   const hint = akahuHintCategory(ctx.categories, t.akahu_category, t.akahu_group);
   if (hint) return { category_id: hint.id, category_source: "akahu", is_transfer: hint.kind === "transfer" };
-  if (t.amount > 0 && (t.type === "INTEREST" || /\b(salary|wages?|payroll|interest credit)\b/i.test(t.description))) {
+  if (t.amount > 0 && /\b(salary|wages?|payroll)\b/i.test(t.description)) {
     const income = ctx.categories.find((c) => c.kind === "income" && !c.parent_id);
     if (income) return { category_id: income.id, category_source: "akahu", is_transfer: false };
   }

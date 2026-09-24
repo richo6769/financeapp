@@ -12,5 +12,11 @@ export type Txn = {
   is_transfer: boolean;
   is_manual: boolean;
   akahu_category: string | null;
+  // Net off (reimbursements)
+  net_amount: number;
+  reimbursed_by: LinkView[];
+  linked_to: LinkView[];
+  unallocated: number | null;
 };
+export type LinkView = { link_id: string; other_id: string; other_name: string; other_date: string; amount: number };
 export type Account = { id: string; name: string; institution: string };

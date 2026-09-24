@@ -4,6 +4,7 @@ import type { AkahuClient, AkahuTransaction } from "@/lib/akahu/types";
 import type { SyncLog, Transaction } from "@/lib/types";
 import { addDays, addMonths, todayLocal, toLocalDate } from "@/lib/dates";
 import { buildMerchantMemory, categorise, pairTransfers } from "@/lib/categorise";
+import { removeLinksFor } from "@/lib/reimburse";
 
 export const BACKFILL_MONTHS = 12;
 export const OVERLAP_DAYS = 7; // re-fetch recent days to catch late-settling items
@@ -182,6 +183,8 @@ export async function purgeMockData(store: Store): Promise<number> {
   const mockAccounts = (await store.select("accounts")).filter((a) => a.id.startsWith("acc_mock_")).map((a) => a.id);
   if (!mockAccounts.length) return 0;
   await store.remove("pending_transactions", { in: { account_id: mockAccounts } });
+  const mockTxnIds = (await store.select("transactions", { in: { account_id: mockAccounts } })).map((t) => t.id);
+  await removeLinksFor(store, mockTxnIds);
   const n = await store.remove("transactions", { in: { account_id: mockAccounts } });
   await store.remove("accounts", { in: { id: mockAccounts } });
   console.log(`[sync] purged ${n} mock transactions before first live sync`);

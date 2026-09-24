@@ -17,6 +17,7 @@ const emptyDb = (): DB => ({
   settings: [],
   chat_messages: [],
   sync_log: [],
+  reimbursement_links: [],
 });
 
 /** Tables whose rows have no `id` column (keyed by user_id). */

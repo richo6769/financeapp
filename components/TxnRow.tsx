@@ -3,11 +3,13 @@
 import { useState } from "react";
 import { api, money, shortDate } from "@/lib/client";
 import CategorySelect from "./CategorySelect";
+import NetOffPanel from "./NetOffPanel";
 import type { Account, Cat, Txn } from "./types";
 
 /**
  * One transaction with inline recategorise. After changing a category we offer
- * "apply to all from this merchant", which also creates a rule.
+ * "apply to all from this merchant", which also creates a rule. Expenses can
+ * be netted off against incoming money (see NetOffPanel).
  */
 export default function TxnRow({
   t,
@@ -25,6 +27,17 @@ export default function TxnRow({
   const [busy, setBusy] = useState(false);
   const acct = accounts.find((a) => a.id === t.account_id);
   const who = t.merchant_name ?? t.description;
+  const [netOff, setNetOff] = useState(false);
+  const netted = t.amount < 0 && t.reimbursed_by.length > 0;
+
+  async function unlink(linkId: string) {
+    try {
+      await api(`/api/reimbursements/${linkId}`, { method: "DELETE" });
+      onChanged("Unlinked");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed");
+    }
+  }
 
   async function save(id: string | null, applyAll: boolean) {
     setBusy(true);
@@ -57,11 +70,41 @@ export default function TxnRow({
             {t.merchant_name && t.merchant_name !== t.description ? ` · ${t.description}` : ""}
           </div>
         </div>
-        <div className={`shrink-0 text-sm font-semibold ${t.amount > 0 ? "text-good" : ""}`}>
-          {t.amount > 0 ? "+" : ""}
-          {money(t.amount)}
+        <div className={`shrink-0 text-right text-sm font-semibold ${t.amount > 0 ? "text-good" : ""}`}>
+          {netted ? (
+            <>
+              <span className="font-normal text-muted line-through">{money(Math.abs(t.amount))}</span> → {money(Math.abs(t.net_amount))}
+              <div className="text-[11px] font-normal text-muted">net</div>
+            </>
+          ) : (
+            <>
+              {t.amount > 0 ? "+" : ""}
+              {money(t.amount)}
+            </>
+          )}
         </div>
       </div>
+      {t.reimbursed_by.length > 0 && (
+        <ul className="mt-1 space-y-0.5 text-xs text-muted">
+          {t.reimbursed_by.map((l) => (
+            <li key={l.link_id}>
+              Paid back {money(l.amount)} by <b className="text-ink">{l.other_name}</b> ({shortDate(l.other_date)}) ·{" "}
+              <button className="underline" onClick={() => unlink(l.link_id)}>Unlink</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {t.linked_to.length > 0 && (
+        <ul className="mt-1 space-y-0.5 text-xs text-muted">
+          {t.linked_to.map((l) => (
+            <li key={l.link_id}>
+              Linked {money(l.amount)} to <b className="text-ink">{l.other_name}</b> ({shortDate(l.other_date)}) ·{" "}
+              <button className="underline" onClick={() => unlink(l.link_id)}>Unlink</button>
+            </li>
+          ))}
+          {t.unallocated != null && t.unallocated > 0 && <li>{money(t.unallocated)} unallocated</li>}
+        </ul>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <CategorySelect
           cats={cats}
@@ -77,8 +120,23 @@ export default function TxnRow({
         {t.category_source && t.category_source !== "manual" && !t.is_transfer && (
           <span className="chip" title="How this was categorised">{t.category_source}</span>
         )}
+        {t.amount < 0 && !t.is_transfer && Math.abs(t.net_amount) > 0 && (
+          <button className="btn px-2 py-1 text-xs" onClick={() => setNetOff((v) => !v)} aria-expanded={netOff}>
+            Net off
+          </button>
+        )}
         {busy && <span className="text-xs text-muted">Saving…</span>}
       </div>
+      {netOff && (
+        <NetOffPanel
+          expense={t}
+          onClose={() => setNetOff(false)}
+          onLinked={(msg) => {
+            setNetOff(false);
+            onChanged(msg);
+          }}
+        />
+      )}
       {offer && (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-accent-soft p-2 text-xs">
           <span>Apply to all from “{who}” and create a rule?</span>

@@ -22,10 +22,12 @@ import {
 } from "@/lib/dates";
 import { round2, toMonthly } from "@/lib/money";
 import { merchantPattern, normalise, ruleMatches } from "@/lib/categorise";
+import { applyNet, loadLinkTotals } from "@/lib/reimburse";
 
 export const BULK_CONFIRM_THRESHOLD = 20;
 
-export class UserError extends Error {}
+export { UserError } from "@/lib/errors";
+import { UserError } from "@/lib/errors";
 
 // ---------------------------------------------------------------- categories
 
@@ -60,6 +62,8 @@ export function findCategory(cats: Category[], ref: string | null | undefined): 
     cats.find((c) => normalise(c.name) === n && !c.parent_id) ??
     cats.find((c) => normalise(c.name) === n) ??
     cats.find((c) => normalise(c.name).replaceAll(" ", "") === n.replaceAll(" ", "")) ??
+    // Parts of compound names: "fuel" → Transport/Fuel, "health" → Health & Wellness.
+    cats.find((c) => !c.parent_id && c.name.split(/\s*[/&]\s*/).some((part) => normalise(part) === n)) ??
     cats.find((c) => !c.parent_id && (normalise(c.name).startsWith(n) || n.startsWith(normalise(c.name))))
   );
 }
@@ -405,6 +409,8 @@ export async function addManualTransaction(
  *  - Income categories never count.
  *  - Expense-category rows count as -amount, so refunds (credits) reduce
  *    spend in their original category.
+ *  - Callers pass NET amounts (see lib/reimburse.ts applyNet), so a $365
+ *    expense with $100 paid back by a mate counts as $265.
  *  - Uncategorised debits count as spend (so totals are honest before triage);
  *    uncategorised credits are ignored until categorised.
  */
@@ -434,11 +440,14 @@ export async function spendingByCategory(
   to: string,
   opts: { includeUnbudgeted?: boolean } = {},
 ): Promise<{ rows: CategorySpend[]; total: number; income: number; txns: Transaction[]; cats: Category[] }> {
-  const [cats, txns, budgets] = await Promise.all([
+  const [cats, rawTxns, budgets, links] = await Promise.all([
     store.select("categories"),
     store.select("transactions", { gte: { local_date: from }, lte: { local_date: to } }),
     store.select("budgets"),
+    loadLinkTotals(store),
   ]);
+  // Net off: expenses count at their net amount; linked incoming money is excluded.
+  const txns = applyNet(rawTxns, links);
   const byRoot = new Map<string, { spent: number; count: number }>();
   let total = 0;
   let income = 0;
@@ -555,13 +564,12 @@ export async function querySpending(
   store: Store,
   input: { from: string; to: string; category?: string; merchant?: string },
 ) {
-  const rows = await findTransactions(store, {
-    from: input.from,
-    to: input.to,
-    category: input.category,
-    merchant: input.merchant,
-  });
-  const cats = await store.select("categories");
+  const [rawRows, links, cats] = await Promise.all([
+    findTransactions(store, { from: input.from, to: input.to, category: input.category, merchant: input.merchant }),
+    loadLinkTotals(store),
+    store.select("categories"),
+  ]);
+  const rows = applyNet(rawRows, links); // net of reimbursements
   // For a merchant/category question count the actual spend (refunds net off).
   const relevant = rows.filter((t) => !t.is_transfer);
   const spend = (t: Transaction) => {

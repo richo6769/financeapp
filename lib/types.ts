@@ -127,6 +127,20 @@ export interface SyncLog {
   error: string | null;
 }
 
+/**
+ * "Net off": part or all of an incoming credit (income_id) reimburses an
+ * expense (expense_id). The expense counts at its net amount and the linked
+ * part of the credit is excluded from income/spend.
+ */
+export interface ReimbursementLink {
+  id: string;
+  user_id: string;
+  expense_id: string;
+  income_id: string;
+  amount: number; // positive NZD
+  created_at: string;
+}
+
 export interface Tables {
   accounts: Account;
   transactions: Transaction;
@@ -137,6 +151,7 @@ export interface Tables {
   settings: Settings;
   chat_messages: ChatMessage;
   sync_log: SyncLog;
+  reimbursement_links: ReimbursementLink;
 }
 
 export type TableName = keyof Tables;

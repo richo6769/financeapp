@@ -20,10 +20,10 @@ const server = http.createServer((req, res) => {
     const last = r.messages[r.messages.length - 1];
     const isToolResult = Array.isArray(last.content) && (last.content as { type: string }[])[0]?.type === "tool_result";
     const content = isToolResult
-      ? [{ type: "text", text: "Set: Rent/Housing $450.00/week × 52 ÷ 12 = $1,950.00/month." }]
+      ? [{ type: "text", text: "Set: Rent $450.00/week × 52 ÷ 12 = $1,950.00/month." }]
       : [
           { type: "text", text: "Setting that now." },
-          { type: "tool_use", id: "toolu_1", name: "set_budget", input: { category: "Rent/Housing", amount: 450, period: "weekly" } },
+          { type: "tool_use", id: "toolu_1", name: "set_budget", input: { category: "Rent", amount: 450, period: "weekly" } },
           { type: "tool_use", id: "toolu_2", name: "query_spending", input: { merchant: "Uber Eats", period: "last_3_months" } },
         ];
     res.setHeader("content-type", "application/json");
@@ -64,8 +64,8 @@ async function main() {
   assert.equal(seen.length, 2);
   assert.equal(seen[0].model, "claude-sonnet-5");
   assert.deepEqual(seen[0].thinking, { type: "adaptive" });
-  assert.equal(seen[0].tools.length, 9);
-  assert.match(seen[0].system[1].text, /Categories:[\s\S]*Rent\/Housing/);
+  assert.equal(seen[0].tools.length, 10);
+  assert.match(seen[0].system[1].text, /Categories:[\s\S]*Rent \(expense\)/);
   const toolResults = seen[1].messages[seen[1].messages.length - 1].content as { tool_use_id: string; content: string }[];
   assert.equal(toolResults.length, 2, "both parallel tool results in one user message");
   assert.equal(turn.tool_calls.length, 2);

@@ -14,6 +14,7 @@ const EXAMPLES = [
   "I paid 40 cash for a haircut yesterday",
   "How much have I spent on Uber Eats in the last 3 months?",
   "Am I on track this month?",
+  "The $100 from Sam was for Snus Direct",
 ];
 
 /** Minimal, safe formatting: **bold**, whole-line _notes_, line breaks. */
@@ -38,6 +39,7 @@ function toolLabel(c: ToolCall) {
   const r = c.result ?? {};
   if (r.error) return `⚠️ ${c.name}: ${r.error}`;
   if (r.needs_confirmation) return `⏸ ${c.name} — waiting for your confirmation`;
+  if (r.needs_choice) return `⏸ ${c.name} — which one?`;
   return `✓ ${c.name.replaceAll("_", " ")}`;
 }
 

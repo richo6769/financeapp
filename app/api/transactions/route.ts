@@ -1,6 +1,7 @@
 import { body, withStore } from "@/lib/api";
 import { addManualTransaction, categoryLabel, findTransactions } from "@/lib/services";
 import { parseLocalDate } from "@/lib/dates";
+import { describeNet } from "@/lib/reimburse";
 
 export const dynamic = "force-dynamic";
 
@@ -16,9 +17,10 @@ export const GET = (req: Request) =>
       to: p.get("to") || undefined,
     });
     const cats = await store.select("categories");
+    const page = await describeNet(store, rows.slice(0, limit));
     return {
       total: rows.length,
-      items: rows.slice(0, limit).map((t) => ({ ...t, category_label: categoryLabel(cats, t.category_id) })),
+      items: page.map((t) => ({ ...t, category_label: categoryLabel(cats, t.category_id) })),
     };
   });
 

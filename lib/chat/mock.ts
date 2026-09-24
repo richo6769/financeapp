@@ -15,27 +15,36 @@ type R = Record<string, unknown>;
 
 const WORD_NUM: Record<string, number> = { one: 1, two: 2, three: 3, six: 6, twelve: 12 };
 const SYNONYMS: Record<string, string> = {
-  rent: "Rent/Housing",
-  housing: "Rent/Housing",
-  mortgage: "Rent/Housing",
+  housing: "Rent",
+  mortgage: "Rent",
   food: "Groceries",
   grocery: "Groceries",
-  takeaways: "Eating Out",
+  takeaway: "Takeaways",
   restaurants: "Eating Out",
-  petrol: "Fuel",
-  gas: "Fuel",
-  gym: "Health/Fitness",
-  power: "Utilities",
-  bills: "Utilities",
+  pubs: "Bars",
+  drinks: "Bars",
+  booze: "Liquor Stores",
+  alcohol: "Liquor Stores",
+  liquor: "Liquor Stores",
+  petrol: "Transport/Fuel",
+  gas: "Transport/Fuel",
+  gym: "Health & Wellness",
+  power: "Bills",
+  utilities: "Bills",
+  clothes: "Clothes/Shopping",
+  income: "Salary",
+  pay: "Salary",
 };
 
 const CASH_HINTS: [RegExp, string][] = [
-  [/coffee|lunch|dinner|breakfast|pizza|kebab|takeaway|cafe|bakery/, "Eating Out"],
+  [/coffee|lunch|dinner|breakfast|cafe|bakery/, "Eating Out"],
+  [/pizza|kebab|takeaway|fish and chips|burger/, "Takeaways"],
+  [/beer|drinks|bar|pub/, "Bars"],
   [/grocer|dairy|milk|bread|market/, "Groceries"],
-  [/bus|taxi|parking|ferry/, "Transport"],
-  [/petrol|fuel/, "Fuel"],
-  [/doctor|physio|gym|pharmacy/, "Health/Fitness"],
+  [/bus|taxi|parking|ferry|petrol|fuel/, "Transport/Fuel"],
+  [/haircut|barber|doctor|physio|gym|pharmacy|massage/, "Health & Wellness"],
   [/movie|cinema|concert|ticket/, "Entertainment"],
+  [/golf|footy|rugby|cricket|squash|tennis/, "Sports"],
 ];
 
 export async function runMockPlanner(
@@ -80,8 +89,46 @@ export async function runMockPlanner(
   }
   if (/^(no|nope|cancel|stop)\b/.test(lower)) return done("No worries — nothing was changed.");
 
+  // --- Choice after link_reimbursement needs_choice: "1" / "2 1" / "expense 2 payment 1"
+  const lastA = [...history].reverse().find((m) => m.role === "assistant");
+  const choice = lastA?.tool_calls?.find((c) => (c.result as R)?.needs_choice);
+  const nums = lower.match(/^\s*(?:expense\s*)?(\d+)(?:\s*(?:,|and)?\s*(?:payment\s*)?(\d+))?\s*$/);
+  if (choice && nums) {
+    const res = choice.result as { expense_candidates: { id: string }[]; income_candidates: { id: string }[] };
+    const multiE = res.expense_candidates.length > 1;
+    const multiI = res.income_candidates.length > 1;
+    const first = Number(nums[1]) - 1;
+    const second = nums[2] ? Number(nums[2]) - 1 : 0;
+    const e = multiE ? res.expense_candidates[first] : res.expense_candidates[0];
+    // Only one number while both lists were ambiguous: it picks the expense;
+    // the payment is re-resolved now the share is known (may ask again).
+    const i = !multiI ? res.income_candidates[0] : multiE ? (nums[2] ? res.income_candidates[second] : undefined) : res.income_candidates[first];
+    if (!e || (!i && !(multiE && multiI && !nums[2]))) return done("That number isn't in the list.");
+    const r = await call("link_reimbursement", { ...(choice.input as R), expense_id: e.id, ...(i ? { income_id: i.id } : {}) });
+    return done(describeLink(r));
+  }
+
+  // --- Net off: "The $100 from Sam was for Snus Direct"
+  let m = t.match(/^(?:the\s+)?\$?(\d+(?:\.\d{1,2})?)\s+(?:from|that)\s+(.+?)\s+(?:was|is|paid)\s+(?:for|towards|me back for)\s+(?:the\s+|my\s+)?(.+?)\.?$/i);
+  if (m) {
+    const r = await call("link_reimbursement", { income_amount: Number(m[1]), income_from: m[2], expense: stripMeal(m[3]) });
+    return done(describeLink(r));
+  }
+  // --- Net off: "Jack paid me back half of dinner at Soul Bar" / "Sam paid me back $50 for Snus Direct"
+  m = t.match(/^(.+?)\s+paid\s+me\s+back\s+(half|a third|a quarter|all|\$?\d+(?:\.\d{1,2})?)\s+(?:of|for)\s+(?:the\s+|my\s+)?(.+?)\.?$/i);
+  if (m) {
+    const share = m[2].toLowerCase();
+    const fraction = share === "half" ? 0.5 : share === "a third" ? 1 / 3 : share === "a quarter" ? 0.25 : share === "all" ? 1 : undefined;
+    const r = await call("link_reimbursement", {
+      income_from: m[1],
+      expense: stripMeal(m[3]),
+      ...(fraction != null ? { fraction } : { amount: Number(share.replace("$", "")) }),
+    });
+    return done(describeLink(r));
+  }
+
   // --- Rules: "Anything from Z Energy or BP is Fuel"
-  let m = t.match(/^(?:anything|everything|all)\s+(?:from|at)\s+(.+?)\s+(?:is|are|goes? (?:in|to)|should be)\s+(.+?)\.?$/i);
+  m = t.match(/^(?:anything|everything|all)\s+(?:from|at)\s+(.+?)\s+(?:is|are|goes? (?:in|to)|should be)\s+(.+?)\.?$/i);
   if (m) {
     const merchants = m[1].split(/\s*(?:,|\bor\b|\band\b)\s*/i).filter(Boolean);
     const cat = catFor(m[2]);
@@ -228,4 +275,28 @@ function describeStatus(s: R): string {
     ...ahead.map((c) => `• 🟠 ${c.name}: ${formatNZD(c.spent as number)} of ${formatNZD(c.budget as number)} (ahead of pace)`),
   ];
   return `${head}${lines.length ? `\n${lines.join("\n")}` : ""}`;
+}
+
+/** "dinner at Soul Bar" → "Soul Bar" */
+function stripMeal(s: string): string {
+  const at = s.match(/\b(?:at|from)\s+(.+)$/i);
+  return (at ? at[1] : s).trim();
+}
+
+function describeLink(r: R): string {
+  if (r.error) return `Couldn't net that off: ${r.error}`;
+  if (r.needs_choice) {
+    const e = r.expense_candidates as { date: string; description: string; amount: number }[];
+    const i = r.income_candidates as { date: string; description: string; amount: number; remaining: number }[];
+    const lines: string[] = ["More than one transaction matches — which one?"];
+    if (e.length > 1) {
+      lines.push("**Expense:**", ...e.map((x, n) => `${n + 1}. ${x.date} ${x.description} ${formatNZD(Math.abs(x.amount))}`));
+    }
+    if (i.length > 1) {
+      lines.push("**Payment:**", ...i.map((x, n) => `${n + 1}. ${x.date} ${x.description} ${formatNZD(x.amount)} (${formatNZD(x.remaining)} unallocated)`));
+    }
+    lines.push(e.length > 1 && i.length > 1 ? 'Reply with two numbers, e.g. "1 2" (expense, payment).' : 'Reply with the number.');
+    return lines.join("\n");
+  }
+  return `Netted off ${formatNZD(r.linked as number)}: ${r.expense}. From ${r.income}.`;
 }

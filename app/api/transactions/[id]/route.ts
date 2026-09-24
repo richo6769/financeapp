@@ -1,5 +1,6 @@
 import { body, withStore } from "@/lib/api";
 import { setTransactionCategory, UserError } from "@/lib/services";
+import { removeLinksFor } from "@/lib/reimburse";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +19,10 @@ export const PATCH = async (req: Request, ctx: { params: Promise<{ id: string }>
 export const DELETE = async (_req: Request, ctx: { params: Promise<{ id: string }> }) => {
   const { id } = await ctx.params;
   return withStore(async (store) => {
-    const n = await store.remove("transactions", { eq: { id, is_manual: true } });
-    if (!n) throw new UserError("Only manual transactions can be deleted");
+    const [t] = await store.select("transactions", { eq: { id, is_manual: true } });
+    if (!t) throw new UserError("Only manual transactions can be deleted");
+    await removeLinksFor(store, [id]);
+    await store.remove("transactions", { eq: { id, is_manual: true } });
     return { ok: true };
   });
 };

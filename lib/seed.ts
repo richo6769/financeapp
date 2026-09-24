@@ -5,32 +5,71 @@ import type { Store } from "@/lib/store/types";
 export const DEFAULT_CATEGORIES: { name: string; kind: CategoryKind; color: string }[] = [
   { name: "Groceries", kind: "expense", color: "#16a34a" },
   { name: "Eating Out", kind: "expense", color: "#f97316" },
-  { name: "Transport", kind: "expense", color: "#0ea5e9" },
-  { name: "Fuel", kind: "expense", color: "#eab308" },
-  { name: "Rent/Housing", kind: "expense", color: "#8b5cf6" },
-  { name: "Utilities", kind: "expense", color: "#06b6d4" },
-  { name: "Subscriptions", kind: "expense", color: "#ec4899" },
-  { name: "Shopping", kind: "expense", color: "#f43f5e" },
-  { name: "Health/Fitness", kind: "expense", color: "#10b981" },
+  { name: "Takeaways", kind: "expense", color: "#fb923c" },
+  { name: "Bars", kind: "expense", color: "#d97706" },
+  { name: "Liquor Stores", kind: "expense", color: "#b45309" },
+  { name: "Sports", kind: "expense", color: "#65a30d" },
   { name: "Travel", kind: "expense", color: "#3b82f6" },
   { name: "Entertainment", kind: "expense", color: "#a855f7" },
-  { name: "Income", kind: "income", color: "#22c55e" },
-  { name: "Transfers", kind: "transfer", color: "#64748b" },
+  { name: "Health & Wellness", kind: "expense", color: "#10b981" },
+  { name: "Home Supplies", kind: "expense", color: "#78716c" },
+  { name: "Rent", kind: "expense", color: "#8b5cf6" },
+  { name: "Transport/Fuel", kind: "expense", color: "#0ea5e9" },
+  { name: "Subscriptions", kind: "expense", color: "#ec4899" },
+  { name: "Clothes/Shopping", kind: "expense", color: "#f43f5e" },
+  { name: "Bills", kind: "expense", color: "#06b6d4" },
+  { name: "Insurance", kind: "expense", color: "#6366f1" },
   { name: "Other", kind: "expense", color: "#94a3b8" },
+  { name: "Salary", kind: "income", color: "#22c55e" },
+  { name: "Transfers", kind: "transfer", color: "#64748b" },
 ];
 
-/** Starter rules for common NZ merchants (the user can edit/delete them). */
+/** Categories detection depends on: renameable, not deletable. */
+export const SYSTEM_CATEGORIES = ["Salary", "Transfers"];
+
+/**
+ * Starter rules for common NZ merchants (editable). Listed in priority order:
+ * more specific patterns come first so they win (e.g. "uber eats" before
+ * "uber"). Rule priority = 100 + index; lower wins. Keep in sync with
+ * supabase/migrations/20260924000100_seed_defaults.sql.
+ */
 export const DEFAULT_RULES: { pattern: string; category: string }[] = [
-  { pattern: "countdown", category: "Groceries" },
-  { pattern: "woolworths", category: "Groceries" },
-  { pattern: "new world", category: "Groceries" },
-  { pattern: "pak n save", category: "Groceries" },
-  { pattern: "paknsave", category: "Groceries" },
-  { pattern: "uber eats", category: "Eating Out" },
-  { pattern: "z energy", category: "Fuel" },
-  { pattern: "bp connect", category: "Fuel" },
-  { pattern: "netflix", category: "Subscriptions" },
-  { pattern: "spotify", category: "Subscriptions" },
+  // Takeaways first: "uber eats" must beat Transport/Fuel's "uber".
+  ...["uber eats", "doordash", "delivereasy", "mcdonalds", "kfc", "burger king", "dominos", "pizza hut", "subway"].map(
+    (pattern) => ({ pattern, category: "Takeaways" }),
+  ),
+  ...["woolworths", "countdown", "new world", "pak n save", "paknsave", "four square", "freshchoice"].map((pattern) => ({
+    pattern,
+    category: "Groceries",
+  })),
+  ...["super liquor", "liquorland", "liquor king", "bottle-o", "glengarry"].map((pattern) => ({
+    pattern,
+    category: "Liquor Stores",
+  })),
+  ...["auckland transport", "at hop", "z energy", "bp", "mobil", "gull", "waitomo", "uber"].map((pattern) => ({
+    pattern,
+    category: "Transport/Fuel",
+  })),
+  ...["netflix", "spotify", "disney", "neon", "amazon prime", "apple.com"].map((pattern) => ({
+    pattern,
+    category: "Subscriptions",
+  })),
+  ...["chemist warehouse", "unichem", "life pharmacy", "les mills", "cityfitness", "snap fitness", "anytime fitness"].map(
+    (pattern) => ({ pattern, category: "Health & Wellness" }),
+  ),
+  ...["bunnings", "mitre 10", "briscoes"].map((pattern) => ({ pattern, category: "Home Supplies" })),
+  ...["kmart", "the warehouse", "farmers", "hallenstein"].map((pattern) => ({ pattern, category: "Clothes/Shopping" })),
+  ...["spark", "one nz", "2degrees", "mercury", "genesis", "contact energy", "watercare"].map((pattern) => ({
+    pattern,
+    category: "Bills",
+  })),
+  ...["aa insurance", "southern cross", "state insurance", "tower", "ami"].map((pattern) => ({
+    pattern,
+    category: "Insurance",
+  })),
+  ...["air new zealand", "jetstar", "booking.com", "airbnb", "agoda"].map((pattern) => ({ pattern, category: "Travel" })),
+  ...["event cinemas", "hoyts", "ticketmaster"].map((pattern) => ({ pattern, category: "Entertainment" })),
+  ...["deloitte", "zuru"].map((pattern) => ({ pattern, category: "Salary" })),
 ];
 
 const seeded = new Set<string>();
@@ -48,7 +87,7 @@ export async function ensureSeeded(store: Store): Promise<void> {
         kind: c.kind,
         color: c.color,
         parent_id: null,
-        is_system: c.name === "Transfers" || c.name === "Income",
+        is_system: SYSTEM_CATEGORIES.includes(c.name),
       })),
     );
     const byName = new Map(cats.map((c) => [c.name, c.id]));

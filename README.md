@@ -48,7 +48,8 @@ lib/
   sync.ts                  Incremental sync, upsert on Akahu _id, pending replacement, transfer pairing
   categorise.ts            Rules engine, transfer detection, Akahu hint mapping, merchant memory
   services.ts              Budgets, categories, rules, spending analytics (shared by UI + chat)
-  chat/tools.ts            9 Claude tools (zod-validated) + server-enforced confirmation tokens
+  reimburse.ts             "Net off": link incoming money to expenses; net amounts for all totals
+  chat/tools.ts            10 Claude tools (zod-validated) + server-enforced confirmation tokens
   chat/agent.ts            Claude tool-use loop + per-turn app context
   chat/mock.ts             Offline planner used when ANTHROPIC_API_KEY is missing
 supabase/migrations/       Schema + RLS + default-category seed trigger
@@ -57,8 +58,8 @@ scripts/test-*.ts          End-to-end tests against mock data (incl. a fake Clau
 
 **Data model:** `accounts`, `transactions`, `pending_transactions`, `categories`
 (with `parent_id` for subcategories), `rules`, `budgets`, `settings` (overall
-cap), `chat_messages`, `sync_log`. Every table has `user_id` + RLS policies
-`user_id = auth.uid()`.
+cap), `chat_messages`, `sync_log`, `reimbursement_links` (Net off). Every table has `user_id` + RLS policies
+`user_id = auth.uid()` (enabled, not forced).
 
 ### How sync works
 1. Upsert accounts (`GET /accounts`).
@@ -80,10 +81,36 @@ cap), `chat_messages`, `sync_log`. Every table has `user_id` + RLS policies
 - Recategorising a transaction offers **"Apply to all from this merchant"**,
   which updates past transactions and creates a rule.
 
+### Default categories & starter rules
+**Expense:** Groceries, Eating Out, Takeaways, Bars, Liquor Stores, Sports, Travel,
+Entertainment, Health & Wellness, Home Supplies, Rent, Transport/Fuel,
+Subscriptions, Clothes/Shopping, Bills, Insurance, Other.
+**Income:** Salary. **Transfer:** Transfers.
+
+71 starter rules (contains-match) cover common NZ merchants — see `DEFAULT_RULES`
+in `lib/seed.ts`, the single source of truth. More specific patterns get a lower
+priority number so they win (`uber eats` → Takeaways beats `uber` → Transport/Fuel).
+After editing the list run `npx tsx --conditions=react-server scripts/gen-seed-sql.ts`
+to regenerate the seed migration (the tests fail if the two drift apart).
+Akahu hints map pubs/bars → Bars and fast food/takeaway → Takeaways.
+
+### Net off (reimbursements)
+When a mate pays you back, tap **Net off** on the expense, search incoming money
+(name, amount, date — newest first) and link all or part of a payment. One
+payment can be split across several expenses and one expense can take several
+payments. The expense then counts at its **net** amount everywhere (category
+spend, budgets, trend, chat answers): $365 at Snus Direct − $100 from Sam =
+**$265**. The linked part of the incoming money is excluded from Salary/income so
+it isn't counted twice; any remainder still counts. You can unlink at any time.
+Links can't exceed the expense or the incoming amount (checked in the app and by
+a database trigger).
+
 ### Chatbot
 Tools: `create_category`, `update_category`, `delete_category`, `set_budget`,
 `create_rule`, `recategorise_transactions`, `add_manual_transaction`,
-`query_spending`, `get_budget_status`.
+`query_spending`, `get_budget_status`, `link_reimbursement`.
+- "The $100 from Sam was for Snus Direct" / "Jack paid me back half of dinner at Soul Bar"
+  match by name, amount and date; if more than one transaction matches, it asks which one before linking.
 - Each turn gets the current categories, budgets, rules and this month's summary as context.
 - Weekly/fortnightly amounts are converted (×52/12, ×26/12) and the maths is shown.
 - Spending answers always come from `query_spending` / `get_budget_status` (real DB numbers).
@@ -98,8 +125,9 @@ Tools: `create_category`, `update_category`, `delete_category`, `set_budget`,
 
 ### 1. Supabase
 1. Create a project at <https://supabase.com> (region: Sydney is closest).
-2. **SQL Editor** → run `supabase/migrations/20260924000000_init.sql`, then
-   `supabase/migrations/20260924000100_seed_defaults.sql`.
+2. **SQL Editor** → run the files in `supabase/migrations/` in order:
+   `20260924000000_init.sql`, `20260924000100_seed_defaults.sql`,
+   `20260925000000_reimbursement_links.sql`.
    (Or with the CLI: `supabase link --project-ref <ref> && supabase db push`.)
 3. **Authentication → Providers → Email**: enabled (magic link is the default).
 4. **Authentication → URL Configuration**: set *Site URL* to your Vercel URL and add
@@ -171,8 +199,10 @@ Open the site in Safari (iOS) → Share → **Add to Home Screen**, or in Chrome
 - **Akahu categories are hints only.** They're mapped to your categories by keyword and never override your rules or manual choices.
 - **Manual choices are sticky**: sync never changes a transaction you categorised by hand; new rules re-categorise past non-manual transactions (with confirmation if 20+).
 - **Bulk threshold** for confirmation is 20 transactions (the same in the UI and chat).
-- **Default rules** for common NZ merchants (Countdown/Woolworths, New World, Pak'nSave, Uber Eats, Z Energy, BP, Netflix, Spotify) are seeded and editable.
-- **System categories** *Income* and *Transfers* can be renamed but not deleted, since detection depends on them.
+- **Default rules** for common NZ merchants (71 patterns, see above) are seeded and editable.
+- **System categories** *Salary* and *Transfers* can be renamed but not deleted, since detection depends on them.
+- **Net off** applies by link, not by date: an expense in September reimbursed in October counts net in September, and the October payment's linked part is excluded. Linking is only allowed from a credit to a debit.
+- **Category name matching** (chat/API) accepts parts of compound names: "fuel" → Transport/Fuel, "health" → Health & Wellness, "shopping" → Clothes/Shopping.
 - **Deleting a category** also deletes its subcategories, rules and budgets; its transactions become uncategorised.
 - **Cash transactions** have no account; only these can be deleted.
 - **Chat history**: the last 30 messages are sent to Claude each turn; full history is stored.

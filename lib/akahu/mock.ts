@@ -43,6 +43,13 @@ const C = {
   online: { name: "Online shopping", group: "Household" },
   cinema: { name: "Cinemas", group: "Lifestyle" },
   airline: { name: "Airlines", group: "Travel" },
+  bar: { name: "Pubs and bars", group: "Lifestyle" },
+  fastfood: { name: "Fast food", group: "Food" },
+  liquor: { name: "Liquor stores", group: "Food" },
+  insurance: { name: "Insurance", group: "Professional services" },
+  hardware: { name: "Hardware stores", group: "Household" },
+  sport: { name: "Sporting goods", group: "Lifestyle" },
+  clothing: { name: "Clothing stores", group: "Appearance" },
 } satisfies Record<string, Cat>;
 
 function hashStr(s: string): number {
@@ -177,15 +184,15 @@ export function mockDay(ld: string): Draft[] {
   // Uber Eats ~2x/week, cafes most weekdays.
   if (r() < 0.28) out.push({ account: MOCK_ACCOUNTS.amex, description: "UBER *EATS HELP.UBER.COM", merchant: "Uber Eats", amount: -money(r, 24, 62), type: "CREDIT CARD", cat: C.takeaway });
   if (dow >= 1 && dow <= 5 && r() < 0.55) {
-    const [desc, merchant] = pick(r, [
-      ["COFFEE SUPREME PONSONBY", "Coffee Supreme"],
-      ["SQ *MAKER COFFEE", null],
-      ["BURGER BURGER PONSONBY", "Burger Burger"],
-      ["HELL PIZZA GREY LYNN", "Hell Pizza"],
-      ["SUSHI SAMA", null],
-    ] as [string, string | null][]);
+    const [desc, merchant, cat] = pick(r, [
+      ["COFFEE SUPREME PONSONBY", "Coffee Supreme", C.cafe],
+      ["SQ *MAKER COFFEE", null, null],
+      ["BURGER BURGER PONSONBY", "Burger Burger", C.cafe],
+      ["HELL PIZZA GREY LYNN", "Hell Pizza", C.takeaway],
+      ["SUSHI SAMA", null, null],
+    ] as [string, string | null, Cat][]);
     const a = card();
-    out.push({ account: a, description: desc, merchant: merchant ?? undefined, amount: -money(r, 6, 38), type: eftpos(a), cat: merchant ? C.cafe : null });
+    out.push({ account: a, description: desc, merchant: merchant ?? undefined, amount: -money(r, 6, 38), type: eftpos(a), cat });
   }
 
   // Fuel roughly every 9 days.
@@ -223,6 +230,22 @@ export function mockDay(ld: string): Draft[] {
 
   // Random unknown payment so the inbox has something to triage.
   if (r() < 0.05) out.push({ account: MOCK_ACCOUNTS.everyday, description: "POLI PAYMENT TRADEME", amount: -money(r, 10, 120), type: "PAYMENT" });
+
+  // Bars, liquor, takeaways, insurance, home, sport, clothes.
+  if (dow === 5 && r() < 0.55) out.push({ account: MOCK_ACCOUNTS.amex, description: "SOUL BAR & BISTRO", merchant: "Soul Bar", amount: -money(r, 40, 160), type: "CREDIT CARD", cat: C.bar });
+  if (dow === 6 && r() < 0.35) out.push({ account: MOCK_ACCOUNTS.everyday, description: "SUPER LIQUOR PONSONBY", merchant: "Super Liquor", amount: -money(r, 25, 90), type: "EFTPOS", cat: C.liquor });
+  if (r() < 0.06) out.push({ account: MOCK_ACCOUNTS.amex, description: "MCDONALDS K RD", merchant: "McDonald's", amount: -money(r, 9, 28), type: "CREDIT CARD", cat: C.fastfood });
+  if (dom === 7) out.push({ account: MOCK_ACCOUNTS.everyday, description: "AA INSURANCE LTD", merchant: "AA Insurance", amount: -89.5, type: "DIRECT DEBIT", cat: C.insurance });
+  if (dom === 26) out.push({ account: MOCK_ACCOUNTS.everyday, description: "SOUTHERN CROSS HEALTH SOCIETY", merchant: "Southern Cross", amount: -62.4, type: "DIRECT DEBIT", cat: C.insurance });
+  if (r() < 0.03) out.push({ account: MOCK_ACCOUNTS.amex, description: "BUNNINGS MT ROSKILL", merchant: "Bunnings", amount: -money(r, 15, 160), type: "CREDIT CARD", cat: C.hardware });
+  if (r() < 0.02) out.push({ account: MOCK_ACCOUNTS.amex, description: "REBEL SPORT ST LUKES", merchant: "Rebel Sport", amount: -money(r, 30, 200), type: "CREDIT CARD", cat: C.sport });
+  if (r() < 0.02) out.push({ account: MOCK_ACCOUNTS.amex, description: "HALLENSTEIN BROS PONSONBY", merchant: "Hallenstein Brothers", amount: -money(r, 40, 150), type: "CREDIT CARD", cat: C.clothing });
+
+  // Shared costs that mates pay back (uncategorised credits → use "Net off").
+  const oddMonth = Number(ld.slice(5, 7)) % 2 === 1;
+  if (dom === 11 && oddMonth) out.push({ account: MOCK_ACCOUNTS.amex, description: "SNUS DIRECT", amount: -money(r, 180, 365), type: "CREDIT CARD" });
+  if (dom === 13 && oddMonth) out.push({ account: MOCK_ACCOUNTS.everyday, description: "SAM WILSON SNUS", amount: 100, type: "CREDIT" });
+  if (dow === 0 && r() < 0.3) out.push({ account: MOCK_ACCOUNTS.everyday, description: "JACK HARRIS DINNER", amount: money(r, 20, 80), type: "CREDIT" });
 
   return out;
 }
