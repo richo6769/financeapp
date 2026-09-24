@@ -159,7 +159,6 @@ begin
   foreach t in array array['accounts','categories','transactions','pending_transactions','rules','budgets','settings','chat_messages','sync_log']
   loop
     execute format('alter table public.%I enable row level security', t);
-    execute format('alter table public.%I force row level security', t);
     execute format($p$create policy "owner_select" on public.%I for select to authenticated using (user_id = (select auth.uid()))$p$, t);
     execute format($p$create policy "owner_insert" on public.%I for insert to authenticated with check (user_id = (select auth.uid()))$p$, t);
     execute format($p$create policy "owner_update" on public.%I for update to authenticated using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()))$p$, t);
