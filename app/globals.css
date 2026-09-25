@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f1f3f6;
+  --ink: #111827;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #0f766e;
+  --accent-ink: #ffffff;
+  --accent-soft: #ccfbf1;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --good: #15803d;
+  --warn: #b45309;
+  --bar: #0f766e;
+  --track: #e5e7eb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0f14;
+    --surface: #131a22;
+    --surface-2: #1b2430;
+    --ink: #e5e7eb;
+    --muted: #9ca3af;
+    --border: #253040;
+    --accent: #2dd4bf;
+    --accent-ink: #042f2e;
+    --accent-soft: #134e4a;
+    --danger: #f87171;
+    --danger-soft: #3b1414;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bar: #2dd4bf;
+    --track: #253040;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-track: var(--track);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-border bg-surface p-4;
+  }
+  .input {
+    @apply rounded-xl border border-border bg-surface px-3 py-2 text-base outline-none focus:border-accent;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium active:scale-[0.98] disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-ink active:scale-[0.98] disabled:opacity-50;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted;
+  }
+}
