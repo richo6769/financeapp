@@ -38,7 +38,7 @@ create table public.categories (
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   name text not null,
   parent_id uuid references public.categories(id) on delete cascade,
-  kind text not null default 'expense' check (kind in ('expense','income','transfer')),
+  kind text not null default 'expense' check (kind in ('expense','income','transfer','savings')),
   color text,
   is_system boolean not null default false,
   created_at timestamptz not null default now()
@@ -126,6 +126,7 @@ create table public.settings (
   overall_monthly_cap numeric(14,2) check (overall_monthly_cap >= 0),
   pay_frequency text check (pay_frequency in ('weekly','fortnightly','monthly')),
   next_payday date,                            -- any payday; used as the cycle anchor
+  monthly_savings_goal numeric(14,2) check (monthly_savings_goal >= 0),
   updated_at timestamptz not null default now()
 );
 create trigger settings_updated_at before update on public.settings

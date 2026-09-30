@@ -58,14 +58,14 @@ async function main() {
     `select pattern, match_type, exclude_words, priority from public.rules where user_id = $1`,
     [OWNER],
   );
-  assert.equal(cats.rows[0].n, 19);
-  assert.equal(rules.rows.length, 71);
+  assert.equal(cats.rows[0].n, 20);
+  assert.equal(rules.rows.length, 73);
   const r = (p: string) => rules.rows.find((x) => x.pattern === p)!;
   assert.equal(r("bp").match_type, "word");
   assert.equal(r("tower").exclude_words, "sky");
   assert.equal(r("uber eats").match_type, "contains");
   assert.ok(r("uber eats").priority < r("uber").priority);
-  ok("seed trigger: 19 categories + 71 rules on sign-up (bp=word, tower excludes 'sky', uber eats before uber)");
+  ok("seed trigger: 20 categories (incl. Savings) + 73 rules on sign-up (bp=word, tower excludes 'sky', uber eats before uber)");
 
   // Owner guard: once registered, no other user can be created.
   await db.query(`insert into public.app_owner (email) values ('me@example.nz')`);
@@ -81,6 +81,23 @@ async function main() {
   await rejects(db, `insert into public.trips (user_id, name, start_date, end_date) values ($1, 'x', '2026-12-26', '2026-12-01')`, /check constraint/, [OWNER]);
   await rejects(db, `insert into public.settings (user_id, pay_frequency) values ($1, 'daily') on conflict (user_id) do update set pay_frequency = excluded.pay_frequency`, /check constraint/, [OWNER]);
   ok("check constraints: match_type incl. 'word', pattern ≤100 chars, trip dates, pay frequency");
+
+  // Savings migration: works on a database created before 'savings' existed, and re-runs safely.
+  await db.exec(`
+    delete from public.categories where kind = 'savings';  -- an older DB has none
+    alter table public.categories drop constraint categories_kind_check;
+    alter table public.categories add constraint categories_kind_check check (kind in ('expense','income','transfer'));
+    alter table public.settings drop column monthly_savings_goal;
+  `);
+  const savingsSql = fs.readFileSync("supabase/migrations/20260930000000_savings.sql", "utf8");
+  await db.exec(savingsSql);
+  await db.exec(savingsSql);
+  await db.query(`insert into public.categories (user_id, name, kind) values ($1, 'Savings 2', 'savings')`, [OWNER]);
+  await rejects(db, `insert into public.categories (user_id, name, kind) values ($1, 'Nope', 'crypto')`, /check constraint/, [OWNER]);
+  await db.query(`update public.settings set monthly_savings_goal = 500 where user_id = $1`, [OWNER]);
+  await rejects(db, `update public.settings set monthly_savings_goal = -1 where user_id = $1`, /check constraint/, [OWNER]);
+  await db.query(`delete from public.categories where name = 'Savings 2'`);
+  ok("savings migration upgrades an older database (kind 'savings', monthly_savings_goal ≥ 0) and is idempotent");
 
   // Reimbursement trigger (runs the SELECT … FOR UPDATE path).
   const tx = async (desc: string, amount: string) =>
@@ -116,7 +133,7 @@ async function main() {
   await db.exec(`set role authenticated`);
   await db.query(`select set_config('request.jwt.claim.sub', $1, false)`, [OWNER]);
   const mine = await db.query<{ n: number }>(`select count(*)::int n from public.categories`);
-  assert.equal(mine.rows[0].n, 19);
+  assert.equal(mine.rows[0].n, 19); // Savings row removed by the upgrade simulation above
   await db.query(`select set_config('request.jwt.claim.sub', $1, false)`, [INTRUDER]);
   const theirs = await db.query<{ n: number }>(`select count(*)::int n from public.transactions`);
   assert.equal(theirs.rows[0].n, 0, "another user sees nothing");

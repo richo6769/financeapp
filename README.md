@@ -60,7 +60,7 @@ scripts/test-*.ts          End-to-end tests against mock data (incl. a fake Clau
 
 **Data model:** `accounts`, `transactions`, `pending_transactions`, `categories`
 (with `parent_id` for subcategories), `rules`, `budgets`, `settings` (overall
-cap, pay cycle), `chat_messages`, `sync_log`, `reimbursement_links` (Net off),
+cap, pay cycle, savings goal), `chat_messages`, `sync_log`, `reimbursement_links` (Net off),
 `ious`, `netoff_suggestions`, `trips`, `trip_transactions`, `subscription_prefs`,
 `weekly_caps`, `weekly_recaps`, and `app_owner` (single-owner guard). Every table has `user_id` + RLS policies
 `user_id = auth.uid()` (enabled, not forced).
@@ -100,7 +100,7 @@ Settings → Bank sync.
 **Expense:** Groceries, Eating Out, Takeaways, Bars, Liquor Stores, Sports, Travel,
 Entertainment, Health & Wellness, Home Supplies, Rent, Transport/Fuel,
 Subscriptions, Clothes/Shopping, Bills, Insurance, Other.
-**Income:** Salary. **Transfer:** Transfers.
+**Income:** Salary. **Transfer:** Transfers. **Savings:** Savings.
 
 71 starter rules (contains-match) cover common NZ merchants — see `DEFAULT_RULES`
 in `lib/seed.ts`, the single source of truth. More specific patterns get a lower
@@ -108,6 +108,17 @@ priority number so they win (`uber eats` → Takeaways beats `uber` → Transpor
 After editing the list run `npx tsx --conditions=react-server scripts/gen-seed-sql.ts`
 to regenerate the seed migration (the tests fail if the two drift apart).
 Akahu hints map pubs/bars → Bars and fast food/takeaway → Takeaways.
+
+### Savings
+Money you put into **Sharesies** or **Feijoa** is tagged **Savings** (a starter
+rule for each, ahead of every other rule). Savings is never counted as spending
+or against budgets. The dashboard shows **Saved this month** (or this pay
+cycle): payments in minus withdrawals back out, with an optional **monthly
+savings goal** (set it on Budgets, or tell the chat "savings goal 500 a month";
+weekly/fortnightly goals are converted to monthly, and the pay-cycle view
+pro-rates it). ANZ everyday ↔ savings sweeps and Amex repayments stay
+**Transfers**. To count another destination as savings, add a rule to the
+Savings category.
 
 ### Net off (reimbursements)
 When a mate pays you back, tap **Net off** on the expense, search incoming money
@@ -157,7 +168,7 @@ Tools: `create_category`, `update_category`, `delete_category`, `set_budget`,
 `create_rule`, `recategorise_transactions`, `add_manual_transaction`,
 `query_spending`, `get_budget_status`, `link_reimbursement`, `create_iou`,
 `list_ious`, `cancel_iou`, `create_trip`, `trip_status`, `set_weekly_cap`,
-`weekly_status`, `list_subscriptions`.
+`weekly_status`, `list_subscriptions`, `set_savings_goal`.
 - Bank text (descriptions, merchant and payer names) is treated as untrusted data:
   it's clipped and stripped of control characters before reaching the model, and
   the system prompt tells Claude never to follow instructions inside it. Every
@@ -181,7 +192,10 @@ Tools: `create_category`, `update_category`, `delete_category`, `set_budget`,
 1. Create a project at <https://supabase.com> (region: Sydney is closest).
 2. **SQL Editor** → run the files in `supabase/migrations/` in order:
    `20260924000000_init.sql`, `20260924000100_seed_defaults.sql`,
-   `20260925000000_reimbursement_links.sql`, `20260926000000_features.sql`.
+   `20260925000000_reimbursement_links.sql`, `20260926000000_features.sql`,
+   `20260930000000_savings.sql`. (Already ran the first four? Just run the
+   savings one — it's safe either way, and the app adds the Savings category and
+   its rules to your existing data on next load.)
    (Or with the CLI: `supabase link --project-ref <ref> && supabase db push`.)
 3. **Register yourself as the only owner** (SQL Editor, once, with your email in lower case):
    ```sql
@@ -267,7 +281,7 @@ Open the site in Safari (iOS) → Share → **Add to Home Screen**, or in Chrome
 - **Word-matched starter rules**: patterns of ≤5 characters (counting spaces) plus ami, bp, gull, tower, neon, spark, farmers, mercury, genesis, subway and state insurance match whole words only. "SKY TOWER" and "FARMERS MARKET" are whole-word hits, so those two rules also have exclude words (`tower` ⟂ sky, `farmers` ⟂ market).
 - **User regex rules**: JavaScript can't time out a regex, so patterns are capped at 100 characters, nested/overlapping repetition and backreferences are rejected, and text is capped at 200 characters.
 - **Subscriptions** include rent and bills if they're regular; hide what you don't want counted.
-- **What counts as spending:** debits (net of refunds) in *expense* categories, plus uncategorised debits (so totals are honest before triage). Income and Transfers never count. Uncategorised credits are ignored until categorised. Pending transactions are shown but not counted until they settle.
+- **What counts as spending:** debits (net of refunds) in *expense* categories, plus uncategorised debits (so totals are honest before triage). Income, Transfers and Savings never count. Uncategorised credits are ignored until categorised. Pending transactions are shown but not counted until they settle.
 - **Months** are NZ calendar months (Pacific/Auckland); "last 3 months" = the 3 months up to and including today.
 - **Budgets** are stored monthly; weekly = ×52/12, fortnightly = ×26/12, yearly = ÷12. The originally entered amount/period is kept for display. A budget on a parent category covers its subcategories.
 - **"On track"**: with an overall cap, total spend vs cap × fraction of month elapsed (5% leeway); without one, spend in budgeted categories vs the sum of their budgets, and no category over budget.

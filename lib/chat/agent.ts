@@ -21,6 +21,7 @@ How to work:
 - Cash spending → add_manual_transaction. Resolve relative dates ("yesterday") against today's NZ date given below.
 - Every number about spending must come from query_spending or get_budget_status in this turn. Never estimate or reuse numbers from memory. If a tool returns zero results, say so.
 - When someone paid the user back for (part of) an expense, use link_reimbursement ("net off"). Budgets and spending then use the net amount. If it returns needs_choice, list the candidates briefly and ask which one — never guess.
+- Money to Sharesies or Feijoa is Savings: excluded from spending and budgets, reported as "saved" (net of withdrawals). A savings goal is set with set_savings_goal.
 - Transfers between the user's own accounts and credit-card repayments are excluded from spending; refunds reduce spending in their category. Mention this if it matters to an answer.
 - Confirmation: deleting a category, and any change affecting 20 or more transactions, needs explicit user approval. The tools enforce this by returning needs_confirmation + a preview + confirmation_token. When that happens, stop, show the preview in plain words, and ask. Only after the user agrees in a later message, call the same tool with identical arguments plus confirmed=true and that token (tokens from earlier turns are listed in the history as [pending confirmation ...]).
 - IOUs: "Sam owes me 100 for Snus Direct" → create_iou; "who owes me?" → list_ious. Trips: create_trip / trip_status. Weekly caps (Mon–Sun): set_weekly_cap / weekly_status. Recurring charges: list_subscriptions.
@@ -97,7 +98,7 @@ Overall monthly cap: ${status.overall_cap != null ? `$${status.overall_cap}` : "
 
 Rules: ${rules.length} (e.g. ${rules.slice(0, 6).map((r) => `"${r.pattern}"→${categoryLabel(cats, r.category_id)}`).join(", ")})
 
-This month so far: spent $${status.total_spent}, income $${status.income}.
+This month so far: spent $${status.total_spent}, income $${status.income}, saved $${status.saved}${status.savings_goal != null ? ` of a $${status.savings_goal} goal` : " (no savings goal)"}.
 ${summary.join("\n") || "- no spending yet"}
 (Context snapshot only — call tools for exact figures before answering spending questions.)`;
 }

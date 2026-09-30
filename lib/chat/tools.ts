@@ -15,6 +15,7 @@ import {
   removeBudget,
   setBudget,
   setOverallCap,
+  setSavingsGoal,
   updateCategory,
   UserError,
 } from "@/lib/services";
@@ -52,13 +53,13 @@ const schemas = {
   create_category: z.object({
     name: z.string().describe("Category name, e.g. 'Pets'"),
     parent: z.string().optional().describe("Parent category name to make this a subcategory"),
-    kind: z.enum(["expense", "income", "transfer"]).optional().describe("Defaults to expense"),
+    kind: z.enum(["expense", "income", "transfer", "savings"]).optional().describe("Defaults to expense"),
   }),
   update_category: z.object({
     category: z.string().describe("Existing category name"),
     new_name: z.string().optional(),
     parent: z.string().nullable().optional().describe("New parent name, or null to make it top-level"),
-    kind: z.enum(["expense", "income", "transfer"]).optional(),
+    kind: z.enum(["expense", "income", "transfer", "savings"]).optional(),
   }),
   delete_category: z.object({
     category: z.string().describe("Category to delete (its subcategories are deleted too; transactions become uncategorised)"),
@@ -151,6 +152,10 @@ const schemas = {
     category: z.string().optional().describe("Only this category"),
   }),
   list_subscriptions: z.object({}),
+  set_savings_goal: z.object({
+    amount: z.number().min(0).nullable().describe("Savings goal in NZD per `period`; null removes it"),
+    period: period.optional().describe("Converted to monthly (weekly ×52/12, fortnightly ×26/12)"),
+  }),
   get_budget_status: z.object({
     month: z.string().optional().describe("YYYY-MM. Defaults to the current month."),
     pay_cycle: z.boolean().optional().describe("Use the current pay cycle instead of the calendar month (if set up)"),
@@ -186,8 +191,10 @@ const descriptions: Record<ToolName, string> = {
   set_weekly_cap: "Set or remove a weekly (Mon–Sun) spending cap for a category, e.g. 'cap bars at 80 a week'.",
   weekly_status: "This week's spending vs weekly caps (Mon–Sun, NZ). Use for 'how am I tracking on X this week?'.",
   list_subscriptions: "Detected recurring charges with amount, frequency, next expected date, monthly total and flags.",
+  set_savings_goal:
+    "Set or remove the monthly savings goal. Savings = money moved to Sharesies/Feijoa (Savings category), net of withdrawals; it's never counted as spending. Show the conversion it returns.",
   get_budget_status:
-    "Budget vs actual for a month: per-category spent/budget/remaining/pace, total, days left, projection and on_track.",
+    "Budget vs actual (also returns saved + savings_goal for the period) for a month: per-category spent/budget/remaining/pace, total, days left, projection and on_track.",
 };
 
 function jsonSchema(s: z.ZodType): Anthropic.Tool.InputSchema {
@@ -376,6 +383,11 @@ export async function executeTool(ctx: ToolContext, name: string, rawInput: unkn
           expense: `${x.expense.name}: $${x.expense.gross.toFixed(2)} → $${x.expense.net.toFixed(2)} net`,
           income: `${x.income.name} $${x.income.amount.toFixed(2)} (unallocated $${x.income.unallocated.toFixed(2)})`,
         };
+      }
+      case "set_savings_goal": {
+        const a = parsed.data as z.infer<typeof schemas.set_savings_goal>;
+        const r = await setSavingsGoal(store, a.amount, a.period ?? "monthly");
+        return { ok: true, monthly_savings_goal: r.monthly, conversion: r.explanation };
       }
       case "get_budget_status": {
         const a = parsed.data as z.infer<typeof schemas.get_budget_status>;

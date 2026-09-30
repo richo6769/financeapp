@@ -1,4 +1,7 @@
-import type { Account, Category, CategorySource, Rule, Transaction } from "@/lib/types";
+import type { Account, Category, CategoryKind, CategorySource, Rule, Transaction } from "@/lib/types";
+
+/** Transfers and Savings are moves of my own money: never spending or income. */
+const isInternalKind = (k: CategoryKind | undefined) => k === "transfer" || k === "savings";
 
 /** Lowercase, strip punctuation, collapse whitespace. */
 export function normalise(s: string | null | undefined): string {
@@ -243,7 +246,7 @@ export function categorise(
   const kindOf = (id: string | null) => ctx.categories.find((c) => c.id === id)?.kind;
   const rule = findRule(ctx.rules, t);
   if (rule) {
-    return { category_id: rule.category_id, category_source: "rule", is_transfer: kindOf(rule.category_id) === "transfer" };
+    return { category_id: rule.category_id, category_source: "rule", is_transfer: isInternalKind(kindOf(rule.category_id)) };
   }
   if (looksLikeTransfer(t, ctx.accounts, t.other_account)) {
     const transfers = ctx.categories.find((c) => c.kind === "transfer" && !c.parent_id);
@@ -251,10 +254,10 @@ export function categorise(
   }
   const mem = t.merchant_name ? ctx.merchantMemory.get(normalise(t.merchant_name)) : undefined;
   if (mem && ctx.categories.some((c) => c.id === mem)) {
-    return { category_id: mem, category_source: "merchant", is_transfer: kindOf(mem) === "transfer" };
+    return { category_id: mem, category_source: "merchant", is_transfer: isInternalKind(kindOf(mem)) };
   }
   const hint = akahuHintCategory(ctx.categories, t.akahu_category, t.akahu_group);
-  if (hint) return { category_id: hint.id, category_source: "akahu", is_transfer: hint.kind === "transfer" };
+  if (hint) return { category_id: hint.id, category_source: "akahu", is_transfer: isInternalKind(hint.kind) };
   if (t.amount > 0 && /\b(salary|wages?|payroll)\b/i.test(t.description)) {
     const income = ctx.categories.find((c) => c.kind === "income" && !c.parent_id);
     if (income) return { category_id: income.id, category_source: "akahu", is_transfer: false };

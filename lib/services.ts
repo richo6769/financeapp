@@ -31,8 +31,8 @@ export const BULK_CONFIRM_THRESHOLD = 20;
 
 export { UserError } from "@/lib/errors";
 import { UserError } from "@/lib/errors";
-export { rootOf, categoryLabel, findCategory, requireCategory } from "@/lib/categories";
-import { rootOf, categoryLabel, findCategory, requireCategory } from "@/lib/categories";
+export { rootOf, categoryLabel, findCategory, requireCategory, isInternalKind } from "@/lib/categories";
+import { rootOf, categoryLabel, findCategory, requireCategory, isInternalKind } from "@/lib/categories";
 
 // ---------------------------------------------------------------- categories
 
@@ -142,6 +142,13 @@ export async function setBudget(
   if (!(input.amount >= 0)) throw new UserError("Budget amount must be zero or more");
   const cats = await store.select("categories");
   const cat = requireCategory(cats, input.category);
+  if (rootOf(cats, cat.id)?.kind !== "expense") {
+    throw new UserError(
+      rootOf(cats, cat.id)?.kind === "savings"
+        ? "Savings isn't spending — set a savings goal instead."
+        : `Budgets are for spending categories; "${cat.name}" is ${rootOf(cats, cat.id)?.kind}.`,
+    );
+  }
   const period = input.period ?? "monthly";
   const { monthly, explanation } = toMonthly(input.amount, period);
   const [budget] = await store.upsert(
@@ -156,6 +163,18 @@ export async function removeBudget(store: Store, categoryRef: string): Promise<n
   const cats = await store.select("categories");
   const cat = requireCategory(cats, categoryRef);
   return store.remove("budgets", { eq: { category_id: cat.id } });
+}
+
+/** Optional monthly savings goal (weekly/fortnightly/yearly converted to monthly). */
+export async function setSavingsGoal(
+  store: Store,
+  amount: number | null,
+  period: BudgetPeriod = "monthly",
+): Promise<{ monthly: number | null; explanation: string }> {
+  if (amount != null && !(amount >= 0 && amount <= 10_000_000)) throw new UserError("Savings goal must be $0 or more");
+  const conv = amount == null ? { monthly: null, explanation: "Savings goal removed" } : toMonthly(amount, period);
+  await store.upsert("settings", [{ monthly_savings_goal: conv.monthly }], "user_id");
+  return conv;
 }
 
 export async function setOverallCap(
@@ -225,7 +244,7 @@ export async function createRule(
     applied = await store.update(
       "transactions",
       { in: { id: hits.map((h) => h.id) } },
-      { category_id: cat.id, category_source: "rule", is_transfer: cat.kind === "transfer" },
+      { category_id: cat.id, category_source: "rule", is_transfer: isInternalKind(cat.kind) },
     );
   }
   return { rule, category: cat.name, matched_existing: hits.length, applied, needs_confirmation: false };
@@ -299,7 +318,7 @@ export async function recategoriseTransactions(
     ? await store.update(
         "transactions",
         { in: { id: rows.map((r) => r.id) } },
-        { category_id: target.id, category_source: "manual", is_transfer: target.kind === "transfer" },
+        { category_id: target.id, category_source: "manual", is_transfer: isInternalKind(target.kind) },
       )
     : 0;
   let rule_created: string | undefined;
@@ -328,7 +347,7 @@ export async function setTransactionCategory(
     {
       category_id: cat?.id ?? null,
       category_source: cat ? "manual" : null,
-      is_transfer: cat?.kind === "transfer",
+      is_transfer: isInternalKind(cat?.kind),
     },
   );
   if (!applyToMerchant || !cat) return { updated: 1 };
@@ -431,6 +450,8 @@ export async function spendingByCategory(
   total: number;
   income: number;
   trip_excluded: number;
+  /** Net moved to savings (Savings-kind categories): out − withdrawals back. */
+  saved: number;
   txns: (Transaction & { gross_amount: number })[];
   cats: Category[];
 }> {
@@ -493,7 +514,11 @@ export async function spendingByCategory(
   const unc = byRoot.get("__uncat");
   if (unc) rows.push(row(null, "Uncategorised", "#9ca3af", unc.spent, null, unc.count));
   rows.sort((a, b) => (b.budget ?? -1) - (a.budget ?? -1) || b.spent - a.spent);
-  return { rows, total: fromCents(total), income: fromCents(income), trip_excluded: fromCents(tripExcluded), txns, cats };
+  // Savings: money out to Sharesies/Feijoa counts as saved; money back reduces it.
+  const saved = txns
+    .filter((t) => !t.removed_at && rootOf(cats, t.category_id)?.kind === "savings")
+    .reduce((a, t) => a - toCents(t.amount), 0);
+  return { rows, total: fromCents(total), income: fromCents(income), trip_excluded: fromCents(tripExcluded), saved: fromCents(saved), txns, cats };
 }
 
 export type PeriodMode = "month" | "cycle";
@@ -535,6 +560,9 @@ export async function budgetStatus(store: Store, opts: { month?: string; mode?: 
   const { rows } = spend;
   const capMonthly = settings?.overall_monthly_cap == null ? null : toCents(settings.overall_monthly_cap);
   const cap = capMonthly == null ? null : (scale ?? ((c: Cents) => c))(capMonthly);
+  const goalMonthly = settings?.monthly_savings_goal == null ? null : toCents(settings.monthly_savings_goal);
+  const savingsGoal = goalMonthly == null ? null : (scale ?? ((c: Cents) => c))(goalMonthly);
+  const savedC = toCents(spend.saved);
   const budgeted = rows.filter((r) => r.budget != null);
   const totalBudget = sumCents(budgeted.map((r) => r.budget!));
   const categories = rows.map((r) => {
@@ -576,6 +604,9 @@ export async function budgetStatus(store: Store, opts: { month?: string; mode?: 
     total_spent: fromCents(total),
     income: spend.income,
     trip_excluded: spend.trip_excluded,
+    saved: fromCents(savedC),
+    savings_goal: savingsGoal == null ? null : fromCents(savingsGoal),
+    savings_pct: savingsGoal ? Math.max(0, Math.round((savedC * 100) / savingsGoal)) : null,
     overall_cap: cap == null ? null : fromCents(cap),
     total_of_category_budgets: fromCents(totalBudget),
     budgeted_categories_spent: fromCents(budgetedSpent),

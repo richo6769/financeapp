@@ -19,6 +19,9 @@ type Dash = {
     month_fraction_elapsed: number;
     total_spent: number;
     trip_excluded: number;
+    saved: number;
+    savings_goal: number | null;
+    savings_pct: number | null;
     overall_cap: number | null;
     total_of_category_budgets: number;
     remaining: number | null;
@@ -139,6 +142,30 @@ export default function Dashboard() {
           {limit ? ` vs ${money(limit, true)}` : ""}
         </p>
       )}
+      <section className="card p-3" aria-label="Savings">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm font-semibold">Saved this {s.mode === "cycle" ? "pay cycle" : "month"}</span>
+          <span className={`text-lg font-semibold ${s.saved < 0 ? "text-danger" : "text-good"}`}>
+            {s.saved < 0 ? "−" : ""}{money(Math.abs(s.saved), true)}
+            {s.savings_goal != null && <span className="text-sm font-normal text-muted"> / {money(s.savings_goal, true)}</span>}
+          </span>
+        </div>
+        {s.savings_goal != null ? (
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-track" role="progressbar" aria-valuenow={s.savings_pct ?? 0} aria-valuemin={0} aria-valuemax={100} aria-label="Savings goal progress">
+            <div className="h-full rounded-full bg-good" style={{ width: `${Math.min(100, s.savings_pct ?? 0)}%` }} />
+          </div>
+        ) : (
+          <p className="mt-1 text-xs text-muted">
+            Sharesies + Feijoa, net of withdrawals. <Link href="/budgets" className="text-accent">Set a goal</Link>
+          </p>
+        )}
+        {s.savings_goal != null && (
+          <p className="mt-1 text-xs text-muted">
+            {s.saved >= s.savings_goal ? "✓ Goal reached" : `${money(s.savings_goal - s.saved, true)} to go`} · not counted as spending
+          </p>
+        )}
+      </section>
+
       {s.trip_excluded > 0 && <p className="text-xs text-muted">{money(s.trip_excluded)} of trip spending is kept separate (see Trips).</p>}
 
       <div className="grid grid-cols-2 gap-2">

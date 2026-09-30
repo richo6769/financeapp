@@ -1,7 +1,7 @@
 import "server-only";
 import type { CategoryKind } from "@/lib/types";
 import type { Store } from "@/lib/store/types";
-import { defaultMatchType } from "@/lib/categorise";
+import { defaultMatchType, ruleMatches } from "@/lib/categorise";
 
 export const DEFAULT_CATEGORIES: { name: string; kind: CategoryKind; color: string }[] = [
   { name: "Groceries", kind: "expense", color: "#16a34a" },
@@ -23,10 +23,14 @@ export const DEFAULT_CATEGORIES: { name: string; kind: CategoryKind; color: stri
   { name: "Other", kind: "expense", color: "#94a3b8" },
   { name: "Salary", kind: "income", color: "#22c55e" },
   { name: "Transfers", kind: "transfer", color: "#64748b" },
+  { name: "Savings", kind: "savings", color: "#0d9488" },
 ];
 
 /** Categories detection depends on: renameable, not deletable. */
-export const SYSTEM_CATEGORIES = ["Salary", "Transfers"];
+export const SYSTEM_CATEGORIES = ["Salary", "Transfers", "Savings"];
+
+/** Where savings go. Money into these counts as "saved", not spending. */
+export const SAVINGS_PATTERNS = ["sharesies", "feijoa"];
 
 /**
  * Starter rules for common NZ merchants (editable). Listed in priority order:
@@ -36,7 +40,9 @@ export const SYSTEM_CATEGORIES = ["Salary", "Transfers"];
  */
 type SeedRule = { pattern: string; category: string };
 const RAW_RULES: SeedRule[] = [
-  // Takeaways first: "uber eats" must beat Transport/Fuel's "uber".
+  // Savings first so nothing else can claim them.
+  ...SAVINGS_PATTERNS.map((pattern) => ({ pattern, category: "Savings" })),
+  // Takeaways next: "uber eats" must beat Transport/Fuel's "uber".
   ...["uber eats", "doordash", "delivereasy", "mcdonalds", "kfc", "burger king", "dominos", "pizza hut", "subway"].map(
     (pattern) => ({ pattern, category: "Takeaways" }),
   ),
@@ -117,6 +123,38 @@ export async function ensureSeeded(store: Store): Promise<void> {
         priority: 100 + i,
       })),
     );
+  } else {
+    await addSavingsIfMissing(store);
   }
   seeded.add(key);
+}
+
+/**
+ * Upgrade for users seeded before Savings existed: add the category and its
+ * rules, and move matching (non-manual) transactions into it.
+ */
+export async function addSavingsIfMissing(store: Store): Promise<boolean> {
+  const cats = await store.select("categories");
+  if (cats.some((c) => c.kind === "savings")) return false;
+  const [savings] = await store.insert("categories", [
+    { name: "Savings", kind: "savings", color: "#0d9488", parent_id: null, is_system: true },
+  ]);
+  const rules = await store.select("rules");
+  const top = Math.min(100, ...rules.map((r) => r.priority));
+  const newRules = SAVINGS_PATTERNS.filter((p) => !rules.some((r) => r.pattern.toLowerCase() === p)).map((pattern, i) => ({
+    pattern,
+    field: "any" as const,
+    match_type: defaultMatchType(pattern),
+    exclude_words: null,
+    category_id: savings.id,
+    priority: top - SAVINGS_PATTERNS.length + i,
+  }));
+  if (newRules.length) await store.insert("rules", newRules);
+  const hits = (await store.select("transactions")).filter(
+    (t) => t.category_source !== "manual" && SAVINGS_PATTERNS.some((p) => ruleMatches({ pattern: p, field: "any", match_type: defaultMatchType(p) }, t)),
+  );
+  if (hits.length) {
+    await store.update("transactions", { in: { id: hits.map((t) => t.id) } }, { category_id: savings.id, category_source: "rule", is_transfer: true });
+  }
+  return true;
 }

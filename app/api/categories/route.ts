@@ -11,7 +11,12 @@ export const GET = () =>
       store.select("budgets"),
       store.select("settings"),
     ]);
-    return { categories, budgets, overall_monthly_cap: settings[0]?.overall_monthly_cap ?? null };
+    return {
+      categories,
+      budgets,
+      overall_monthly_cap: settings[0]?.overall_monthly_cap ?? null,
+      monthly_savings_goal: settings[0]?.monthly_savings_goal ?? null,
+    };
   });
 
 export const POST = (req: Request) =>

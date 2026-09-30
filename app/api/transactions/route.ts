@@ -1,5 +1,5 @@
 import { body, withStore } from "@/lib/api";
-import { addManualTransaction, categoryLabel, findTransactions } from "@/lib/services";
+import { addManualTransaction, categoryLabel, findTransactions, rootOf } from "@/lib/services";
 import { parseLocalDate } from "@/lib/dates";
 import { describeNet } from "@/lib/reimburse";
 import { loadMembership } from "@/lib/trips";
@@ -35,6 +35,7 @@ export const GET = (req: Request) =>
         return {
           ...t,
           category_label: categoryLabel(cats, t.category_id),
+          category_kind: rootOf(cats, t.category_id)?.kind ?? null,
           trip: tripId ? { id: tripId, name: trips.find((x) => x.id === tripId)?.name ?? "Trip" } : null,
           ious: ious
             .filter((i) => i.expense_id === t.id && i.status !== "cancelled")

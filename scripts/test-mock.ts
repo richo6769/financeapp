@@ -40,7 +40,7 @@ async function main() {
   await ensureSeeded(store);
   const cats = await store.select("categories");
   const cat = (n: string) => cats.find((c) => c.name === n)!;
-  assert.equal(cats.length, 19);
+  assert.equal(cats.length, 20);
   assert.deepEqual(
     cats.filter((c) => c.kind === "expense").map((c) => c.name).sort(),
     ["Bars", "Bills", "Clothes/Shopping", "Eating Out", "Entertainment", "Groceries", "Health & Wellness", "Home Supplies",
@@ -48,6 +48,7 @@ async function main() {
   );
   assert.deepEqual(cats.filter((c) => c.kind === "income").map((c) => c.name), ["Salary"]);
   assert.deepEqual(cats.filter((c) => c.kind === "transfer").map((c) => c.name), ["Transfers"]);
+  assert.deepEqual(cats.filter((c) => c.kind === "savings").map((c) => c.name), ["Savings"]);
   const seededRules = await store.select("rules");
   assert.equal(seededRules.length, DEFAULT_RULES.length);
   const prio = (p: string) => seededRules.find((r) => r.pattern === p)!.priority;
@@ -55,7 +56,7 @@ async function main() {
   const seedSql = fs.readFileSync("supabase/migrations/20260924000100_seed_defaults.sql", "utf8");
   for (const c of cats) assert.ok(seedSql.includes(`'${c.name}'`), `seed SQL missing category ${c.name}`);
   for (const r of DEFAULT_RULES) assert.ok(seedSql.includes(`'${r.pattern}'`), `seed SQL missing rule ${r.pattern}`);
-  ok(`seeded 19 categories (17 expense, Salary, Transfers) + ${DEFAULT_RULES.length} starter rules; seed SQL in sync`);
+  ok(`seeded 20 categories (17 expense, Salary, Transfers, Savings) + ${DEFAULT_RULES.length} starter rules; seed SQL in sync`);
 
   // ------------------------------------------------------------------ sync
   console.log("Sync");
@@ -183,9 +184,9 @@ async function main() {
 
   // ------------------------------------------------------------ chat tools
   console.log("Chatbot tools (offline planner → real tool layer)");
-  assert.equal(TOOL_DEFS.length, 18);
+  assert.equal(TOOL_DEFS.length, 19);
   assert.ok(TOOL_DEFS.every((t) => t.input_schema.type === "object"));
-  ok("18 tool definitions with object JSON schemas");
+  ok("19 tool definitions with object JSON schemas");
 
   const history: ChatMessage[] = [];
   const say = async (text: string) => {

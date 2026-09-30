@@ -242,6 +242,11 @@ export function mockDay(ld: string): Draft[] {
   if (r() < 0.02) out.push({ account: MOCK_ACCOUNTS.amex, description: "REBEL SPORT ST LUKES", merchant: "Rebel Sport", amount: -money(r, 30, 200), type: "CREDIT CARD", cat: C.sport });
   if (r() < 0.02) out.push({ account: MOCK_ACCOUNTS.amex, description: "HALLENSTEIN BROS PONSONBY", merchant: "Hallenstein Brothers", amount: -money(r, 40, 150), type: "CREDIT CARD", cat: C.clothing });
 
+  // Savings: Sharesies monthly + Feijoa round-ups weekly; occasional withdrawal.
+  if (dom === 2) out.push({ account: MOCK_ACCOUNTS.everyday, description: "SHARESIES LIMITED", merchant: "Sharesies", amount: -250, type: "PAYMENT" });
+  if (dow === 5) out.push({ account: MOCK_ACCOUNTS.everyday, description: "FEIJOA SAVINGS", amount: -25, type: "DIRECT DEBIT" });
+  if (dom === 16 && Number(ld.slice(5, 7)) % 4 === 0) out.push({ account: MOCK_ACCOUNTS.everyday, description: "SHARESIES WITHDRAWAL", merchant: "Sharesies", amount: 120, type: "CREDIT" });
+
   // Shared costs that mates pay back (uncategorised credits → use "Net off").
   const oddMonth = Number(ld.slice(5, 7)) % 2 === 1;
   if (dom === 11 && oddMonth) out.push({ account: MOCK_ACCOUNTS.amex, description: "SNUS DIRECT", amount: -money(r, 180, 365), type: "CREDIT CARD" });

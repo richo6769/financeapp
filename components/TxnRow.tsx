@@ -136,7 +136,7 @@ export default function TxnRow({
           className="max-w-[60%]"
           ariaLabel={`Category for ${who}`}
         />
-        {t.is_transfer && <span className="chip">transfer · excluded</span>}
+        {t.is_transfer && <span className="chip">{t.category_kind === "savings" ? "savings · not spending" : "transfer · excluded"}</span>}
         {t.removed_at && <span className="chip" title="The bank removed this after it settled; it's excluded from totals">removed by bank</span>}
         {t.trip && <a href={`/trips/${t.trip.id}`} className="chip">✈ {t.trip.name}</a>}
         {t.ious.map((i) => (

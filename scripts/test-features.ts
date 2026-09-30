@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { LocalStore } from "@/lib/store/local";
-import { ensureSeeded, DEFAULT_RULES } from "@/lib/seed";
+import { addSavingsIfMissing, ensureSeeded, DEFAULT_RULES } from "@/lib/seed";
 import type { Rule, SyncLog, Transaction } from "@/lib/types";
 import type { AkahuAccount, AkahuClient, AkahuTransaction } from "@/lib/akahu/types";
 import { MockAkahuClient } from "@/lib/akahu/mock";
@@ -17,7 +17,7 @@ import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
 import { findRule, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
-import { budgetStatus, createRule, setBudget, spendingByCategory, UserError } from "@/lib/services";
+import { budgetStatus, createRule, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
 import { cancelIou, createIou, listIous, owedByPerson } from "@/lib/iou";
 import { acceptSuggestion, dismissSuggestion, generateSuggestions, pendingSuggestions } from "@/lib/suggest";
@@ -780,6 +780,105 @@ async function chatSafety() {
   ok("bank text is clipped + stripped of control chars before reaching the model; system prompt marks it as data; deletes still need confirmation");
 }
 
+async function savings() {
+  section("Savings (Sharesies + Feijoa)");
+  const store = await freshStore();
+  await runSync(store, new MockAkahuClient(), "test");
+  const cats = await store.select("categories");
+  const savingsCat = cats.find((c) => c.kind === "savings")!;
+  const transfersCat = cats.find((c) => c.kind === "transfer")!;
+  const txns = await store.select("transactions");
+  const shares = txns.filter((t) => /SHARESIES|FEIJOA/.test(t.description));
+  assert.ok(shares.length > 20);
+  assert.ok(shares.every((t) => t.category_id === savingsCat.id && t.category_source === "rule" && t.is_transfer));
+  const sweeps = txns.filter((t) => t.description.startsWith("TRANSFER "));
+  const amex = txns.filter((t) => t.description === "AMERICAN EXPRESS NZ PAYMENT" || t.description === "PAYMENT RECEIVED - THANK YOU");
+  assert.ok(sweeps.length && sweeps.every((t) => t.category_id === transfersCat.id), "ANZ savings sweeps stay Transfers");
+  assert.ok(amex.length && amex.every((t) => t.category_id === transfersCat.id), "Amex repayments stay Transfers");
+  ok(`${shares.length} Sharesies/Feijoa payments → Savings; ANZ sweeps and Amex repayments stay Transfers`);
+
+  const from = addMonths(today, -2);
+  const s = await spendingByCategory(store, from, today);
+  const inRange = shares.filter((t) => t.local_date >= from && t.local_date <= today);
+  assert.ok(!s.rows.some((r) => r.name === "Savings"), "no Savings row in spending/budgets");
+  assert.equal(toCents(s.saved), -sumCents(inRange.map((t) => t.amount)));
+  assert.ok(inRange.some((t) => t.amount > 0), "fixture has a withdrawal to net off");
+  const spentWithout = s.rows.reduce((a, r) => a + toCents(r.spent), 0);
+  assert.equal(spentWithout, toCents(s.total), "spending total excludes savings");
+  ok(`excluded from spending and budgets; saved over 2 months = $${s.saved} (net of withdrawals)`);
+
+  const clean = await freshStore();
+  await add(clean, [
+    { desc: "SHARESIES LIMITED", merchant: "Sharesies", amount: -250, category: "Savings", source: "rule" },
+    { desc: "FEIJOA SAVINGS", amount: -33.33, category: "Savings", source: "rule" },
+    { desc: "FEIJOA SAVINGS", amount: -33.33, category: "Savings", source: "rule" },
+    { desc: "FEIJOA SAVINGS", amount: -33.33, category: "Savings", source: "rule" },
+    { desc: "SHARESIES WITHDRAWAL", merchant: "Sharesies", amount: 120, category: "Savings", source: "rule" },
+    { desc: "WOOLWORTHS", amount: -80, category: "Groceries" },
+  ]);
+  await assert.rejects(setBudget(clean, { category: "Savings", amount: 100 }), /savings goal instead/);
+  let st = await budgetStatus(clean);
+  assert.equal(st.saved, 229.99); // 250 + 99.99 − 120
+  assert.equal(st.total_spent, 80);
+  assert.equal(st.savings_goal, null);
+  const r = await runMockPlanner({ store: clean, priorTokens: new Set() }, [], "savings goal 500 a month");
+  assert.ok(r.tool_calls.some((c) => c.name === "set_savings_goal"), r.reply);
+  st = await budgetStatus(clean);
+  assert.equal(st.savings_goal, 500);
+  assert.equal(st.savings_pct, 46);
+  await executeTool({ store: clean, priorTokens: new Set() }, "set_savings_goal", { amount: 100, period: "weekly" });
+  assert.equal((await budgetStatus(clean)).savings_goal, 433.33);
+  await savePayCycle(clean, "fortnightly", today);
+  assert.equal((await budgetStatus(clean, { mode: "cycle" })).savings_goal, fromCents(mulDiv(toCents(433.33), 12, 26)));
+  const q = await runMockPlanner({ store: clean, priorTokens: new Set() }, [], "how much have I saved this month?");
+  assert.match(q.reply, /\$229\.99/);
+  ok("Saved this month $229.99 (250 + 3 × 33.33 − 120, exact cents); goal via chat, weekly → monthly, pro-rated per pay cycle");
+
+  const [groceries] = await clean.select("transactions", { eq: { description: "WOOLWORTHS" } });
+  const cleanSavingsId = (await clean.select("categories")).find((c) => c.kind === "savings")!.id;
+  await setTransactionCategory(clean, groceries.id, cleanSavingsId, false);
+  let [row] = await clean.select("transactions", { eq: { id: groceries.id } });
+  assert.equal(row.is_transfer, true);
+  assert.equal((await budgetStatus(clean)).total_spent, 0);
+  assert.equal((await budgetStatus(clean)).saved, 309.99, "…and it now counts as saved");
+  await setTransactionCategory(clean, groceries.id, await catId(clean, "Groceries"), false);
+  [row] = await clean.select("transactions", { eq: { id: groceries.id } });
+  assert.equal(row.is_transfer, false);
+  assert.equal((await budgetStatus(clean)).total_spent, 80);
+  ok("moving a transaction into Savings excludes it from spending; moving it back counts it again");
+
+  // Nothing downstream treats savings as spending or as money to net off.
+  const withdrawal = (await clean.select("transactions", { eq: { description: "SHARESIES WITHDRAWAL" } }))[0];
+  await generateSuggestions(clean);
+  assert.ok(!(await pendingSuggestions(clean)).some((p) => p.income_id === withdrawal.id));
+  const subs = await listSubscriptions(store);
+  assert.ok(!subs.subscriptions.some((x) => /sharesies|feijoa/i.test(x.name)));
+  ok("Sharesies withdrawals aren't suggested as net offs; savings payments aren't listed as subscriptions");
+
+  // Upgrade path for data seeded before Savings existed.
+  const old = await freshStore();
+  const oldSavings = (await old.select("categories")).find((c) => c.kind === "savings")!;
+  await old.remove("rules", { eq: { category_id: oldSavings.id } });
+  await old.remove("categories", { eq: { id: oldSavings.id } });
+  await add(old, [
+    { desc: "SHARESIES LIMITED", merchant: "Sharesies", amount: -250 },
+    { desc: "FEIJOA SAVINGS", amount: -25, category: "Other", source: "akahu" },
+    { desc: "FEIJOA SAVINGS", amount: -25, category: "Entertainment" }, // manual: left alone
+  ]);
+  assert.equal(await addSavingsIfMissing(old), true);
+  assert.equal(await addSavingsIfMissing(old), false, "idempotent");
+  const upCats = await old.select("categories");
+  const up = upCats.find((c) => c.kind === "savings")!;
+  const upRules = await old.select("rules", { eq: { category_id: up.id } });
+  const allRules = await old.select("rules");
+  assert.deepEqual(upRules.map((x) => x.pattern).sort(), ["feijoa", "sharesies"]);
+  assert.ok(upRules.every((x) => allRules.every((o) => o.category_id === up.id || x.priority < o.priority)), "savings rules win");
+  const moved = await old.select("transactions", { eq: { category_id: up.id } });
+  assert.equal(moved.length, 2);
+  assert.equal((await old.select("transactions", { eq: { category_source: "manual", description: "FEIJOA SAVINGS" } }))[0].category_id, await catId(old, "Entertainment"));
+  ok("existing data: Savings category + rules are added once, matching rows move over, manual choices are kept");
+}
+
 async function main() {
   await money();
   await dst();
@@ -794,6 +893,7 @@ async function main() {
   await recap();
   await syncSafety();
   await backfill();
+  await savings();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);
