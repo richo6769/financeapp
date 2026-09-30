@@ -17,7 +17,7 @@ import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
 import { accountKey, categorise, findRule, isCardCharge, looksLikeTransfer, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
-import { budgetStatus, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
+import { budgetStatus, categoryBreakdown, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { dashboard } from "@/lib/dashboard";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
 import { cancelIou, createIou, listIous, owedByPerson } from "@/lib/iou";
@@ -1106,6 +1106,36 @@ async function inboxUndoAndAutoGuess() {
   ok("guesses are saved and shown next visit; not this is remembered; each sync guesses only new merchants");
 }
 
+async function categoryDrilldown() {
+  section("Home: tap a category to see what makes it up");
+  const store = await freshStore();
+  await runSync(store, new MockAkahuClient(), "test");
+  const s = await budgetStatus(store, { month: addMonths(today, -1) }); // a full month of mock data
+  assert.ok(s.categories.length > 3);
+  for (const c of s.categories) {
+    const b = await categoryBreakdown(store, c.category_id, s.from, s.to);
+    assert.equal(b.total, c.spent, `${c.name}: breakdown total matches the bar`);
+    assert.equal(b.count, b.items.length);
+    assert.equal(sumCents(b.merchants.map((m) => m.spent)), toCents(b.total), `${c.name}: merchants add up`);
+    assert.ok(b.items.every((i) => i.merchant), "every item has a merchant label");
+  }
+  // Net off: the expense counts at its net amount; the linked payment isn't spending.
+  const s2 = await freshStore();
+  const [dinner, pay] = await add(s2, [
+    { desc: "SOUL BAR & BISTRO", amount: -120, date: today, category: "Eating Out" },
+    { desc: "JACK HARRIS", amount: 40, date: today },
+  ]);
+  await linkReimbursement(s2, { expense_id: dinner.id, income_id: pay.id });
+  const eat = (await s2.select("categories")).find((c) => c.name === "Eating Out")!;
+  const b = await categoryBreakdown(s2, eat.id, today, today);
+  assert.equal(b.total, 80);
+  assert.deepEqual(b.merchants.map((m) => [m.name, m.spent]), [["Soul Bar & Bistro", 80]]);
+  const unc = await categoryBreakdown(s2, null, today, today);
+  assert.equal(unc.count, 0, "a fully netted-off payment isn't uncategorised spend");
+  await assert.rejects(categoryBreakdown(s2, "nope", today, today), UserError);
+  ok(`every category's breakdown adds up to its bar (${s.categories.length} categories on mock data); net offs at net; merchants sum to the total`);
+}
+
 async function main() {
   await money();
   await dst();
@@ -1126,6 +1156,7 @@ async function main() {
   await bankTransfers();
   await groupedInbox();
   await inboxUndoAndAutoGuess();
+  await categoryDrilldown();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);

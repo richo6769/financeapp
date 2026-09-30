@@ -14,6 +14,8 @@ type Dash = {
     mode: "month" | "cycle";
     cycle_available: boolean;
     period_label: string;
+    from: string;
+    to: string;
     days_left: number;
     days_in_month: number;
     month_fraction_elapsed: number;
@@ -199,7 +201,15 @@ export default function Dashboard() {
         </div>
         {s.categories.length === 0 && <p className="text-sm text-muted">No spending yet this period.</p>}
         {s.categories.map((c) => (
-          <BudgetBar key={c.category_id ?? "uncat"} name={c.name} spent={c.spent} budget={c.budget} color={c.color} paceFraction={s.month_fraction_elapsed} />
+          <BudgetBar
+            key={c.category_id ?? "uncat"}
+            name={c.name}
+            spent={c.spent}
+            budget={c.budget}
+            color={c.color}
+            paceFraction={s.month_fraction_elapsed}
+            href={`/spending?${new URLSearchParams({ category: c.category_id ?? "uncategorised", from: s.from, to: s.to, period: s.period_label })}`}
+          />
         ))}
         {s.categories.every((c) => c.budget == null) && s.categories.length > 0 && (
           <p className="mt-2 text-sm text-muted">

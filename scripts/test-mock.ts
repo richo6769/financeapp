@@ -274,7 +274,7 @@ async function main() {
   const d = await dashboard(store);
   assert.equal(d.trend.length, 6);
   assert.ok(d.trend.slice(0, 5).every((m) => m.spent > 1000), JSON.stringify(d.trend));
-  assert.ok(d.top_merchants.length > 0);
+  assert.ok(d.top_merchants.length > 0 || d.status.total_spent <= 0, "top merchants whenever there is spending this month (none yet on the 1st)");
   ok(`dashboard: 6-month trend ${d.trend.map((m) => `${m.label} $${Math.round(m.spent)}`).join(", ")}`);
 
   // ---------------------------------------------------------- net off
@@ -401,7 +401,7 @@ async function netOffTests() {
 
   // Budgets use net amounts.
   await setBudget(store2, { category: "Bars", amount: 100 });
-  const bs = await budgetStatus(store2);
+  const bs = await budgetStatus(store2, { month: d(4) }); // the month the Bars spend is in (last month on the 1st)
   const bars = bs.categories.find((x) => x.name === "Bars")!;
   assert.equal(bars.spent, 30);
   assert.equal(bars.remaining, 70);
