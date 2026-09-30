@@ -35,7 +35,6 @@ type Dash = {
   pending: { id: string; local_date: string; description: string; amount: number }[];
   last_sync: { started_at: string; status: string; mode: string; error: string | null; warnings: string | null } | null;
   uncategorised_count: number;
-  suggestion_count: number;
   weekly: { week_start: string; week_end: string; days_left: number; caps: Cap[]; alerts: Cap[] };
   latest_recap: { week_start: string; summary: string } | null;
   owed_to_me: number;
@@ -169,12 +168,6 @@ export default function Dashboard() {
       {s.trip_excluded > 0 && <p className="text-xs text-muted">{money(s.trip_excluded)} of trip spending is kept separate (see Trips).</p>}
 
       <div className="grid grid-cols-2 gap-2">
-        {data.suggestion_count > 0 && (
-          <Link href="/inbox#suggestions" className="card flex flex-col p-3">
-            <span className="text-lg font-semibold">{data.suggestion_count}</span>
-            <span className="text-xs text-muted">suggested net off{data.suggestion_count === 1 ? "" : "s"} →</span>
-          </Link>
-        )}
         {data.uncategorised_count > 0 && (
           <Link href="/inbox" className="card flex flex-col p-3">
             <span className="text-lg font-semibold">{data.uncategorised_count}</span>

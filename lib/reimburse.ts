@@ -72,7 +72,7 @@ const label = (t: Pick<Transaction, "merchant_name" | "description">) => t.merch
  * An incoming payment that's 100% allocated via Net off needs no category of
  * its own: it's shown as "<expense category> · netted off" and never counts as
  * uncategorised. Derived from links, so it follows every way of linking (UI,
- * Accept on a suggestion, chat) and reverts on unlink.
+ * chat) and reverts on unlink.
  */
 export function isFullyNetted(t: Pick<Transaction, "id" | "amount">, totals: LinkTotals): boolean {
   return toCents(t.amount) > 0 && (totals.fromIncome.get(t.id) ?? 0) > 0 && remainingCents(t, totals) === 0;
