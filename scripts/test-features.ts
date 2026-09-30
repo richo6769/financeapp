@@ -1,6 +1,6 @@
 /**
  * Feature + review tests: money maths, NZ daylight saving, rule matching,
- * IOUs, suggested net offs, trips, pay cycles, subscriptions, weekly caps,
+ * IOUs, trips, pay cycles, subscriptions, weekly caps,
  * recaps, refunds, sync safety and the live Akahu client's error handling.
  *   npx tsx --conditions=react-server scripts/test-features.ts
  */
@@ -21,7 +21,6 @@ import { budgetStatus, createRule, findTransactions, setBudget, setTransactionCa
 import { dashboard } from "@/lib/dashboard";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
 import { cancelIou, createIou, listIous, owedByPerson } from "@/lib/iou";
-import { acceptSuggestion, dismissSuggestion, generateSuggestions, pendingSuggestions } from "@/lib/suggest";
 import { createTrip, loadMembership, setTripMembership, tripSummary, updateTrip } from "@/lib/trips";
 import { cycleFor, detectPayCycle, savePayCycle } from "@/lib/paycycle";
 import { listSubscriptions, setSubscriptionIgnored } from "@/lib/subscriptions";
@@ -293,46 +292,6 @@ async function ious() {
   const who = await say("who owes me?");
   assert.match(who.reply, /Sam/);
   ok('chat: "Sam owes me 50 for Snus Direct" asks which expense when ambiguous, "2" creates it; "who owes me?" lists it');
-}
-
-async function suggestions() {
-  section("Suggested net offs");
-  const store = await freshStore();
-  const [soul, snus] = await add(store, [
-    { desc: "SOUL BAR & BISTRO", amount: -84, date: addDays(today, -3), category: "Bars" },
-    { desc: "SNUS DIRECT", amount: -365, date: addDays(today, -6), category: "Other" },
-    { desc: "OLD DINNER", amount: -84, date: addDays(today, -20), category: "Eating Out" }, // outside 14 days
-  ]);
-  await createIou(store, { expense_id: snus.id, person_name: "Sam", amount: 100 });
-  const [jack, sam] = await add(store, [
-    { desc: "JACK HARRIS DINNER", amount: 42, date: addDays(today, -1) },
-    { desc: "SAM WILSON", amount: 100, date: today },
-    { desc: "MIGHTY APE REFUND", amount: 42, merchant: "Mighty Ape", category: "Clothes/Shopping", source: "rule" },
-    { desc: "ACME SALARY", amount: 42, category: "Salary" },
-    { desc: "TRANSFER FROM SAVINGS", amount: 42, category: "Transfers" },
-  ]);
-  const created = await generateSuggestions(store);
-  const pend = await pendingSuggestions(store);
-  assert.equal((await store.select("reimbursement_links")).length, 0, "suggestions never link on their own");
-  assert.ok(pend.every((p) => [jack.id, sam.id].includes(p.income_id)), "refunds, salary and transfers are never suggested");
-  const samTop = pend.filter((p) => p.income_id === sam.id).sort((a, b) => b.score - a.score)[0];
-  assert.equal(samTop.expense_id, snus.id);
-  assert.ok(samTop.score >= 100 && samTop.reason.includes("Sam owes"));
-  const jackTop = pend.filter((p) => p.income_id === jack.id).sort((a, b) => b.score - a.score)[0];
-  assert.equal(jackTop.expense_id, soul.id, "half of $84 within 14 days, not the 20-day-old one");
-  assert.match(jackTop.reason, /half of \$84/);
-  ok(`${created} suggestions: IOU name match scores highest (Sam → Snus Direct), "half of $84" for Jack; nothing auto-linked`);
-
-  await acceptSuggestion(store, samTop.id);
-  const links = await store.select("reimbursement_links");
-  assert.equal(links.length, 1);
-  assert.equal(links[0].amount, 100);
-  assert.equal((await listIous(store, { status: "all" }))[0].status, "settled");
-  await dismissSuggestion(store, jackTop.id);
-  assert.equal((await generateSuggestions(store)), 0, "dismissed/accepted suggestions are not re-created");
-  assert.equal((await pendingSuggestions(store)).filter((p) => p.id === jackTop.id).length, 0);
-  await assert.rejects(acceptSuggestion(store, jackTop.id), /no longer available/);
-  ok("Accept creates the link and settles the IOU; Dismissed never comes back; a dismissed one can't be accepted");
 }
 
 async function trips() {
@@ -848,13 +807,10 @@ async function savings() {
   assert.equal((await budgetStatus(clean)).total_spent, 80);
   ok("moving a transaction into Savings excludes it from spending; moving it back counts it again");
 
-  // Nothing downstream treats savings as spending or as money to net off.
-  const withdrawal = (await clean.select("transactions", { eq: { description: "SHARESIES WITHDRAWAL" } }))[0];
-  await generateSuggestions(clean);
-  assert.ok(!(await pendingSuggestions(clean)).some((p) => p.income_id === withdrawal.id));
+  // Nothing downstream treats savings as spending.
   const subs = await listSubscriptions(store);
   assert.ok(!subs.subscriptions.some((x) => /sharesies|feijoa/i.test(x.name)));
-  ok("Sharesies withdrawals aren't suggested as net offs; savings payments aren't listed as subscriptions");
+  ok("savings payments aren't listed as subscriptions");
 
   // Upgrade path for data seeded before Savings existed.
   const old = await freshStore();
@@ -933,17 +889,8 @@ async function nettedOff() {
   assert.equal((await view(usd.id)).netted_off, false);
   ok("unlinking: an uncategorised payment returns to Uncategorised; one with a category keeps it");
 
-  // Same logic via Accept on a suggestion …
+  // Same logic via chat.
   const s2 = await freshStore();
-  const [bar] = await add(s2, [{ desc: "SOUL BAR & BISTRO", amount: -84, date: addDays(today, -2), category: "Bars" }]);
-  const [pay] = await add(s2, [{ desc: "JACK HARRIS DINNER", amount: 42, date: addDays(today, -1) }]);
-  await generateSuggestions(s2);
-  const sug = (await pendingSuggestions(s2)).find((x) => x.income_id === pay.id && x.expense_id === bar.id)!;
-  assert.ok((await findTransactions(s2, { category: "uncategorised" })).some((t) => t.id === pay.id));
-  await acceptSuggestion(s2, sug.id);
-  assert.ok(!(await findTransactions(s2, { category: "uncategorised" })).some((t) => t.id === pay.id));
-  assert.deepEqual((await describeNet(s2, [pay]))[0].netted_categories, ["Bars"]);
-  // … and via chat.
   const [snus] = await add(s2, [{ desc: "SNUS DIRECT", amount: -365, date: addDays(today, -4), category: "Other" }]);
   const [sam] = await add(s2, [{ desc: "SAM WILSON", amount: 100, date: addDays(today, -1) }]);
   const r = await runMockPlanner({ store: s2, priorTokens: new Set() }, [], "The $100 from Sam was for Snus Direct");
@@ -952,7 +899,7 @@ async function nettedOff() {
   assert.equal((await describeNet(s2, [sam]))[0].netted_off, true);
   await setTransactionCategory(s2, snus.id, null, false);
   assert.deepEqual((await describeNet(s2, [sam]))[0].netted_categories, [], 'uncategorised expense → plain "Netted off"');
-  ok("Accept on a suggestion and chat links behave the same (payment leaves Uncategorised, shows the expense category)");
+  ok("chat links behave the same (payment leaves Uncategorised, shows the expense category)");
 
   const cases: [string, string][] = [
     ["EVERYDAY/KAK 25.00 USD CONVERTED AT 1.6852 INCL FEE", "Everyday/Kak"],
@@ -1041,7 +988,6 @@ async function main() {
   await dst();
   await rules();
   await ious();
-  await suggestions();
   await trips();
   await payCycle();
   await subscriptions();

@@ -6,7 +6,6 @@ import { addDays, addMonths, todayLocal, toLocalDate } from "@/lib/dates";
 import { buildMerchantMemory, categorise, pairTransfers } from "@/lib/categorise";
 import { linkTotals, removeLinksFor } from "@/lib/reimburse";
 import { reverseIouForLink } from "@/lib/iou";
-import { generateSuggestions } from "@/lib/suggest";
 import { fromCents, toCents } from "@/lib/money";
 import { backfillMonths } from "@/lib/env";
 
@@ -252,14 +251,6 @@ export async function runSync(
       );
     }
 
-    // Suggest net offs for new incoming money (never applied automatically).
-    try {
-      const since = start > addDays(today, -30) ? start : addDays(today, -30);
-      await generateSuggestions(store, { since });
-    } catch (err) {
-      warnings.push(`Couldn't compute net-off suggestions: ${err instanceof Error ? err.message : err}`);
-    }
-
     return await finish({
       status: "success",
       range_start: start,
@@ -304,7 +295,7 @@ export async function reconcileLinks(store: Store): Promise<number> {
 /**
  * Remove mock accounts/transactions. Only ids with the mock prefixes match
  * (acc_mock_… / trans_mock_…); manual/cash rows and real Akahu rows are
- * untouched. Links/IOUs/suggestions/trip overrides on purged rows go too.
+ * untouched. Links/IOUs/trip overrides on purged rows go too.
  */
 export async function purgeMockData(store: Store): Promise<number> {
   const mockAccounts = (await store.select("accounts")).map((a) => a.id).filter(isMockAccountId);

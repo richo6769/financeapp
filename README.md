@@ -84,8 +84,7 @@ Settings → Bank sync.
 8. Settled transactions the bank later removes are flagged `removed_at` (excluded,
    never deleted; restored if they reappear). Amounts the bank edits are updated,
    and any net-off link that no longer fits is removed.
-9. Suggested net offs are generated for new incoming money.
-10. A `sync_log` row records the result + warnings. Triggered by **Sync now** or the daily cron.
+9. A `sync_log` row records the result + warnings. Triggered by **Sync now** or the daily cron.
 
 ### Categorisation precedence
 **Your manual choice › your rules › own-account transfer detection › merchant memory › Akahu enrichment hint › obvious words in a card charge › Uncategorised.**
@@ -140,21 +139,15 @@ uncategorised anywhere. The badge follows the expense if you recategorise it. A
 **partially** linked payment stays in the inbox with "$X unallocated" beside the
 dropdown — only that remainder needs a category. Unlinking returns the payment to
 Uncategorised, or to the category it had before. This is worked out from the
-links themselves, so it applies the same way whether you link in the app, tap
-Accept on a suggestion, or ask the chat. Link labels use a cleaned-up bank
+links themselves, so it applies the same way whether you link in the app or ask
+the chat. Link labels use a cleaned-up bank
 description (e.g. "Everyday/Kak" instead of the full USD conversion text).
 
-### IOUs, suggested net offs, trips, pay cycle, subscriptions, caps, recaps
+### IOUs, trips, pay cycle, subscriptions, caps, recaps
 - **IOUs** — tap **IOU** on an expense ("Sam owes me $100") or tell the chat. When
   a payment whose bank line names that person is netted off against the expense,
   the IOU settles automatically; partial payments reduce the balance and
   unlinking re-opens it exactly. **Owed to me** groups open IOUs by person with age.
-- **Suggested net offs** — after each sync, new incoming money that isn't Salary,
-  a transfer or a merchant refund is matched to expenses from the previous 14
-  days: an open IOU naming the payer scores highest, then amounts equal to the
-  whole, half, a third or a quarter of an expense (±1c), then recency. They
-  appear on the dashboard and at the top of the Inbox with **Accept / Dismiss**.
-  Nothing is ever linked without Accept, and dismissed ones never come back.
 - **Trips** — transactions in the trip dates that are foreign-currency or Travel
   are tagged automatically (or tick "include ALL spending"); add/remove any
   transaction by hand. Akahu's original currency/amount is shown beside the NZD.

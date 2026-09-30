@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { useApi } from "@/components/useApi";
 import TxnRow from "@/components/TxnRow";
-import Suggestions from "@/components/Suggestions";
 import type { Account, Cat, Txn } from "@/components/types";
 
 /** Quick triage of uncategorised transactions. */
@@ -16,7 +15,6 @@ export default function Inbox() {
 
   return (
     <div className="space-y-4">
-      <Suggestions />
       <div>
         <h1 className="text-xl font-semibold">Uncategorised</h1>
         <p className="text-sm text-muted">
