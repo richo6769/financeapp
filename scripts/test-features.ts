@@ -15,7 +15,7 @@ import type { AkahuAccount, AkahuClient, AkahuTransaction } from "@/lib/akahu/ty
 import { MockAkahuClient } from "@/lib/akahu/mock";
 import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
-import { addDays, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
+import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
 import { findRule, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
 import { budgetStatus, createRule, setBudget, spendingByCategory, UserError } from "@/lib/services";
 import { linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
@@ -650,6 +650,74 @@ async function syncSafety() {
   ok("mock purge runs only after a successful live fetch and deletes only acc_mock_/trans_mock_ rows (cash + real rows kept)");
 }
 
+class RecordingClient extends ScriptedClient {
+  ranges: [string, string][] = [];
+  async listTransactions(start?: string, end?: string) {
+    this.ranges.push([start!, end!]);
+    return super.listTransactions();
+  }
+}
+
+async function backfill() {
+  section("Backfill window (BACKFILL_MONTHS)");
+  const acct: AkahuAccount = { _id: "acc_ck1backfill", name: "Real ANZ", status: "ACTIVE", type: "CHECKING", connection: { _id: "conn_x", name: "ANZ" } };
+  const txn = (daysAgo: number): AkahuTransaction => ({
+    _id: `trans_ck1bf${daysAgo}`,
+    _account: acct._id,
+    date: `${addDays(today, -daysAgo)}T01:00:00.000Z`,
+    description: "REAL COFFEE",
+    amount: -5,
+    type: "EFTPOS",
+  });
+  const saved = process.env.BACKFILL_MONTHS;
+  const firstLiveSync = async (value: string | undefined) => {
+    if (value === undefined) delete process.env.BACKFILL_MONTHS;
+    else process.env.BACKFILL_MONTHS = value;
+    const store = await freshStore();
+    const client = new RecordingClient([acct], [txn(5)], "live");
+    const log = await runSync(store, client, "test");
+    assert.equal(log.status, "success", log.error ?? "");
+    return { log, client, store };
+  };
+  try {
+    const d = await firstLiveSync(undefined);
+    assert.equal(d.log.range_start, addMonths(today, -3));
+    assert.equal(d.client.ranges[0][0], `${addDays(addMonths(today, -3), -1)}T00:00:00.000Z`);
+    ok(`default: first live sync requests 3 months (from ${d.log.range_start})`);
+
+    const six = await firstLiveSync("6");
+    assert.equal(six.log.range_start, addMonths(today, -6));
+    const one = await firstLiveSync("1");
+    assert.equal(one.log.range_start, addMonths(today, -1));
+    ok("BACKFILL_MONTHS=6 → 6 months, BACKFILL_MONTHS=1 → 1 month");
+
+    for (const bad of ["abc", "0", "25", "2.5", "-3", ""]) {
+      const r = await firstLiveSync(bad);
+      assert.equal(r.log.range_start, addMonths(today, -3), `BACKFILL_MONTHS="${bad}"`);
+    }
+    ok('invalid values ("abc", 0, 25, 2.5, -3, empty) fall back to 3 months');
+
+    process.env.BACKFILL_MONTHS = "6";
+    const again = await runSync(d.store, d.client, "test");
+    assert.equal(again.range_start, addDays(addDays(today, -5), -7));
+    const full = await runSync(d.store, d.client, "test", { full: true });
+    assert.equal(full.range_start, addMonths(today, -6));
+    ok("later syncs stay incremental (latest − 7 days); a full resync uses BACKFILL_MONTHS");
+
+    delete process.env.BACKFILL_MONTHS;
+    const store = await freshStore();
+    const mock = await runSync(store, new MockAkahuClient(), "test");
+    assert.equal(mock.range_start, addMonths(today, -12));
+    const live = new RecordingClient([acct], [txn(5)], "live");
+    const switched = await runSync(store, live, "test");
+    assert.equal(switched.range_start, addMonths(today, -3), "first live sync after mock data backfills 3 months, not incrementally");
+    ok("mock mode still generates 12 months; the first live sync after mock data backfills 3 months");
+  } finally {
+    if (saved === undefined) delete process.env.BACKFILL_MONTHS;
+    else process.env.BACKFILL_MONTHS = saved;
+  }
+}
+
 async function liveClient() {
   section("Live Akahu client (fake fetch)");
   const waits: number[] = [];
@@ -725,6 +793,7 @@ async function main() {
   await refunds();
   await recap();
   await syncSafety();
+  await backfill();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);

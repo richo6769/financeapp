@@ -72,8 +72,10 @@ partial sync never changes existing data. Akahu 429/5xx/network errors back off
 Settings → Bank sync.
 1. Upsert accounts (`GET /accounts`); accounts Akahu stops returning are flagged
    *missing* (history kept).
-2. Range: first sync backfills **12 months**; later syncs start 7 days before the
-   newest stored transaction (overlap catches late-settling items).
+2. Range: the first live sync backfills **`BACKFILL_MONTHS` months (default 3,
+   1–24 allowed)**; mock mode always generates 12 months. Later syncs start 7 days
+   before the newest stored transaction (overlap catches late-settling items).
+   A full resync (`POST /api/sync?full=1`) uses the same backfill window.
 3. `GET /transactions?start&end`, following `cursor.next` until exhausted.
 4. Upsert on Akahu `_id` (unique) → re-running never duplicates.
 5. New/uncategorised rows are categorised; existing decisions are kept.
@@ -214,7 +216,8 @@ Create a key at <https://console.anthropic.com> → `ANTHROPIC_API_KEY`.
 
 ### 4. Environment variables
 Copy `.env.example` → `.env.local` and fill in. See the file for every variable.
-Run `npm run check-env` to confirm what's live.
+Optional: `BACKFILL_MONTHS` (default 3) sets how much history the first live sync
+pulls. Run `npm run check-env` to confirm what's live.
 
 ### 5. Deploy to Vercel
 1. Push this repo to GitHub, then **Vercel → Add New Project → Import**.
@@ -237,9 +240,16 @@ curl -H "Authorization: Bearer $CRON_SECRET" https://<your-app>.vercel.app/api/c
 ### Switching from mock to live
 Add the Akahu tokens (with Supabase configured) and redeploy / restart. On the
 first live sync the app **automatically deletes the mock accounts and
-transactions** (ids prefixed `acc_mock_` / `trans_mock_`) and backfills 12
-months of real data. Your categories, rules, budgets and chat history are kept.
+transactions** (ids prefixed `acc_mock_` / `trans_mock_`) and backfills
+`BACKFILL_MONTHS` months of real data (default 3). To start with more history, set
+e.g. `BACKFILL_MONTHS=12` **before** that first live sync; later syncs are
+incremental, so changing it afterwards only affects a full resync. Your categories, rules, budgets and chat history are kept.
 Set `AKAHU_MODE=mock` to force mock data even with tokens present.
+
+Some features need history to kick in: subscription detection needs 3 charges
+(2 for yearly), pay-cycle detection needs 3 paydays, and the 6-month trend chart
+fills in as data arrives. With the default 3 months, yearly subscriptions and the
+older trend months won't appear until more history accumulates.
 
 ### Install on your phone
 Open the site in Safari (iOS) → Share → **Add to Home Screen**, or in Chrome

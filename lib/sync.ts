@@ -8,8 +8,15 @@ import { linkTotals, removeLinksFor } from "@/lib/reimburse";
 import { reverseIouForLink } from "@/lib/iou";
 import { generateSuggestions } from "@/lib/suggest";
 import { fromCents, toCents } from "@/lib/money";
+import { backfillMonths } from "@/lib/env";
 
-export const BACKFILL_MONTHS = 12;
+/** Mock data is generated, so demo mode always shows a full year of history. */
+export const MOCK_BACKFILL_MONTHS = 12;
+
+/** First-sync backfill: BACKFILL_MONTHS (default 3) for live Akahu, 12 for mock. */
+export function backfillMonthsFor(mode: AkahuClient["mode"]): number {
+  return mode === "live" ? backfillMonths() : MOCK_BACKFILL_MONTHS;
+}
 export const OVERLAP_DAYS = 7; // re-fetch recent days to catch late-settling items
 /** Refuse to flag more than this share of a window as "removed by bank" in one go. */
 const MAX_REMOVED_SHARE = 0.2;
@@ -29,6 +36,8 @@ function validate(t: AkahuTransaction): string | null {
 
 /**
  * Incremental Akahu sync. Safety rules:
+ *  - First sync (or a full resync) backfills BACKFILL_MONTHS (default 3) of
+ *    live history, 12 months in mock mode; later syncs are incremental.
  *  - Everything is fetched from Akahu first; nothing is written until every
  *    page has arrived and validated, so a failed/partial fetch changes nothing.
  *  - Writes are upserts keyed on Akahu ids (idempotent); existing rows are
@@ -79,7 +88,7 @@ export async function runSync(
     );
     const freshStart = client.mode === "live" && latest && isMockTxnId(latest.akahu_id);
     const start =
-      !opts.full && latest && !freshStart ? addDays(latest.local_date, -OVERLAP_DAYS) : addMonths(today, -BACKFILL_MONTHS);
+      !opts.full && latest && !freshStart ? addDays(latest.local_date, -OVERLAP_DAYS) : addMonths(today, -backfillMonthsFor(client.mode));
     // Pad by a day each side so NZ/UTC boundaries never drop a transaction.
     const startIso = `${addDays(start, -1)}T00:00:00.000Z`;
     const endIso = new Date().toISOString();
