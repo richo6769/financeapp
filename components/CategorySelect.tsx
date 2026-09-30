@@ -10,6 +10,7 @@ export default function CategorySelect({
   includeUncategorised = true,
   className = "",
   ariaLabel = "Category",
+  placeholder = "Uncategorised",
 }: {
   cats: Cat[];
   value: string | null;
@@ -17,6 +18,7 @@ export default function CategorySelect({
   includeUncategorised?: boolean;
   className?: string;
   ariaLabel?: string;
+  placeholder?: string;
 }) {
   const roots = cats.filter((c) => !c.parent_id).sort((a, b) => a.name.localeCompare(b.name));
   return (
@@ -26,7 +28,7 @@ export default function CategorySelect({
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value || null)}
     >
-      {includeUncategorised && <option value="">Uncategorised</option>}
+      {includeUncategorised && <option value="">{placeholder}</option>}
       {roots.map((r) => [
         <option key={r.id} value={r.id}>{r.name}</option>,
         ...cats
