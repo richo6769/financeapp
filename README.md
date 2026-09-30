@@ -88,7 +88,9 @@ Settings → Bank sync.
 10. A `sync_log` row records the result + warnings. Triggered by **Sync now** or the daily cron.
 
 ### Categorisation precedence
-**Your manual choice › your rules › own-account transfer detection › merchant memory › Akahu enrichment hint › Uncategorised.**
+**Your manual choice › your rules › own-account transfer detection › merchant memory › Akahu enrichment hint › obvious words in a card charge › Uncategorised.**
+
+Card purchases (EFTPOS, credit card, or a debit charge showing the masked card number) with words like coffee/cafe/bakery go to Eating Out, pizza/burger/kebab to Takeaways, and pub/tavern/brewery to Bars. Transfers and payments to or from people are never guessed this way, because their references are often inaccurate. "Apply to all" rules drop per-transaction ids, so `FLIGHTNETWRK1133124432 ONLINE` makes the rule `flightnetwrk`.
 - Transfers between your accounts and **Amex repayments from ANZ** (plus the
   matching "PAYMENT RECEIVED" credit on the card) are tagged **Transfers** and
   excluded from all spending totals.

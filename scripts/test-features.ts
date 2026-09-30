@@ -16,7 +16,7 @@ import { MockAkahuClient } from "@/lib/akahu/mock";
 import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
-import { findRule, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
+import { categorise, findRule, isCardCharge, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
 import { budgetStatus, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { dashboard } from "@/lib/dashboard";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
@@ -987,6 +987,29 @@ async function uniqueIds() {
   ok('"FLIGHTNETWRK1133124432 ONLINE" → rule "flightnetwrk", which also catches FLIGHTNETWRK1134868134');
 }
 
+async function cardKeywords() {
+  section("Card charges with obvious words (coffee) are categorised");
+  const store = await freshStore();
+  const categories = await store.select("categories");
+  const accounts = [{ id: "daily", type: "CHECKING" }, { id: "amex", type: "CREDITCARD" }] as never[];
+  const ctx = { categories, rules: await store.select("rules"), accounts, merchantMemory: new Map<string, string>() };
+  const name = (id: string | null) => categories.find((c) => c.id === id)?.name ?? "Uncategorised";
+  const guess = (description: string, type: string | null, amount = -4, account_id = "daily") =>
+    name(categorise({ description, merchant_name: null, amount, account_id, type, akahu_category: null }, ctx).category_id);
+  assert.equal(guess("Smz*Coffee C Card number: 4835 **** **** 0680", "DEBIT"), "Eating Out", "debit card charge with masked card number");
+  assert.equal(guess("SMZ*COFFEE C", "EFTPOS"), "Eating Out");
+  assert.equal(guess("BAMBINA CAFE", null, -12, "amex"), "Eating Out", "on the credit card account");
+  assert.equal(guess("DOUGHBOYS PIZZA", "CREDIT CARD"), "Takeaways");
+  assert.equal(guess("FORTUNE TAVERN", "EFTPOS"), "Bars");
+  // People's references don't count.
+  assert.equal(guess("J SMITH coffee", "TRANSFER"), "Uncategorised", "transfer to a person");
+  assert.equal(guess("SAM coffee money", "DIRECT CREDIT", 5), "Uncategorised", "money in from a person");
+  assert.equal(guess("MIA coffee", "PAYMENT"), "Uncategorised", "bill/online payment to a person");
+  assert.equal(guess("MIA coffee", "DEBIT"), "Uncategorised", "debit without card evidence");
+  assert.ok(!isCardCharge({ amount: 4, account_id: "amex", type: "CREDIT CARD", description: "COFFEE REFUND" }, accounts), "refunds aren't charges");
+  ok('"Smz*Coffee C Card number: 4835 …" → Eating Out; "coffee" in a transfer/payment reference from a person → left alone');
+}
+
 async function main() {
   await money();
   await dst();
@@ -1004,6 +1027,7 @@ async function main() {
   await savings();
   await nettedOff();
   await uniqueIds();
+  await cardKeywords();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);
