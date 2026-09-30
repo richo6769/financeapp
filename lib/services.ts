@@ -25,7 +25,7 @@ import { fromCents, monthlyToCycleCents, mulDiv, sumCents, toCents, toMonthly, t
 import { currentCycle } from "@/lib/paycycle";
 import { monthlyExclusions } from "@/lib/trips";
 import { defaultMatchType, merchantPattern, normalise, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
-import { applyNet, loadLinkTotals } from "@/lib/reimburse";
+import { applyNet, loadLinkTotals, needsCategory } from "@/lib/reimburse";
 
 export const BULK_CONFIRM_THRESHOLD = 20;
 
@@ -271,7 +271,11 @@ export async function findTransactions(store: Store, f: TxnFilter): Promise<Tran
   if (f.to) base.lte!.local_date = f.to;
   if (f.account_id) base.eq!.account_id = f.account_id;
   let rows = await store.select("transactions", base, { order: { column: "date", ascending: false } });
-  if (f.category === "uncategorised") rows = rows.filter((t) => !t.category_id);
+  if (f.category === "uncategorised") {
+    // Fully netted-off incoming payments need no category of their own.
+    const totals = await loadLinkTotals(store);
+    rows = rows.filter((t) => needsCategory(t, totals));
+  }
   else if (f.category) {
     const cat = requireCategory(cats, f.category);
     const ids = new Set([cat.id, ...cats.filter((c) => c.parent_id === cat.id).map((c) => c.id)]);

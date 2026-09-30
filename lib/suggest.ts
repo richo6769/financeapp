@@ -7,6 +7,7 @@ import { rootOf } from "@/lib/categories";
 import { linkTotals, linkReimbursement, remainingCents } from "@/lib/reimburse";
 import { balanceCents, personMatches } from "@/lib/iou";
 import { UserError } from "@/lib/errors";
+import { cleanDescription } from "@/lib/text";
 
 /**
  * Auto-suggested Net offs. After a sync we look at new incoming credits that
@@ -115,8 +116,8 @@ export async function pendingSuggestions(store: Store) {
     .map(({ s, income, expense }) => ({
       ...s,
       amount: fromCents(Math.min(toCents(s.amount), remainingCents(income, totals), remainingCents(expense, totals))),
-      income: { id: income.id, date: income.local_date, description: income.description, amount: income.amount },
-      expense: { id: expense.id, date: expense.local_date, description: expense.merchant_name ?? expense.description, amount: expense.amount },
+      income: { id: income.id, date: income.local_date, description: income.merchant_name ?? cleanDescription(income.description), amount: income.amount },
+      expense: { id: expense.id, date: expense.local_date, description: expense.merchant_name ?? cleanDescription(expense.description), amount: expense.amount },
     }));
 }
 

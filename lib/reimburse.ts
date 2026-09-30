@@ -6,7 +6,8 @@ import { formatCents, fromCents, toCents, type Cents } from "@/lib/money";
 import { applyLinkToIou, reverseIouForLink } from "@/lib/iou";
 import { normalise } from "@/lib/categorise";
 import { UserError } from "@/lib/errors";
-import { clip } from "@/lib/text";
+import { clip, cleanDescription } from "@/lib/text";
+import { categoryLabel } from "@/lib/categories";
 
 /**
  * "Net off": link incoming money (credits) to the expenses it reimburses.
@@ -64,7 +65,23 @@ export function remainingOf(t: Pick<Transaction, "id" | "amount">, totals: LinkT
   return fromCents(remainingCents(t, totals));
 }
 
-const label = (t: Transaction) => t.merchant_name ?? t.description;
+/** Merchant name, else a cleaned-up bank description ("Everyday/Kak"). */
+const label = (t: Pick<Transaction, "merchant_name" | "description">) => t.merchant_name ?? cleanDescription(t.description);
+
+/**
+ * An incoming payment that's 100% allocated via Net off needs no category of
+ * its own: it's shown as "<expense category> · netted off" and never counts as
+ * uncategorised. Derived from links, so it follows every way of linking (UI,
+ * Accept on a suggestion, chat) and reverts on unlink.
+ */
+export function isFullyNetted(t: Pick<Transaction, "id" | "amount">, totals: LinkTotals): boolean {
+  return toCents(t.amount) > 0 && (totals.fromIncome.get(t.id) ?? 0) > 0 && remainingCents(t, totals) === 0;
+}
+
+/** Needs a category: no category, not removed by the bank, not fully netted off. */
+export function needsCategory(t: Transaction, totals: LinkTotals): boolean {
+  return !t.category_id && !t.removed_at && !isFullyNetted(t, totals);
+}
 
 export async function linkReimbursement(
   store: Store,
@@ -163,6 +180,8 @@ export interface LinkView {
   other_id: string;
   other_name: string;
   other_date: string;
+  /** Category of the other transaction (for credits: the expense's category). */
+  other_category: string;
   amount: number;
 }
 
@@ -174,6 +193,10 @@ export interface NetView {
   linked_to: LinkView[];
   /** on credits with links: what's left unallocated */
   unallocated: number | null;
+  /** credit fully allocated: no category needed */
+  netted_off: boolean;
+  /** categories of the expense(s) a fully netted credit covers */
+  netted_categories: string[];
 }
 
 /** Decorate transactions for the UI with net amounts and link details. */
@@ -183,27 +206,35 @@ export async function describeNet<T extends Transaction>(store: Store, txns: T[]
   const relevant = new Set(txns.map((t) => t.id));
   const touched = links.filter((l) => relevant.has(l.expense_id) || relevant.has(l.income_id));
   const otherIds = [...new Set(touched.flatMap((l) => [l.expense_id, l.income_id]))];
-  const others = otherIds.length ? await store.select("transactions", { in: { id: otherIds } }) : [];
+  const [others, cats] = await Promise.all([
+    otherIds.length ? store.select("transactions", { in: { id: otherIds } }) : Promise.resolve([] as Transaction[]),
+    store.select("categories"),
+  ]);
   const byId = new Map(others.map((o) => [o.id, o]));
   const view = (l: ReimbursementLink, otherId: string): LinkView => {
     const o = byId.get(otherId);
     return {
       link_id: l.id,
       other_id: otherId,
-      other_name: o ? label(o) : "(deleted)",
+      other_name: o ? clip(label(o), 40) : "(deleted)",
       other_date: o?.local_date ?? "",
+      other_category: o ? categoryLabel(cats, o.category_id) : "Uncategorised",
       amount: Number(l.amount),
     };
   };
   return txns.map((t) => {
     const reimbursed_by = touched.filter((l) => l.expense_id === t.id).map((l) => view(l, l.income_id));
     const linked_to = touched.filter((l) => l.income_id === t.id).map((l) => view(l, l.expense_id));
+    const netted = isFullyNetted(t, totals);
     return {
       ...t,
       net_amount: netAmount(t, totals),
       reimbursed_by,
       linked_to,
       unallocated: linked_to.length ? remainingOf(t, totals) : null,
+      netted_off: netted,
+      // The expense(s)' categories; an uncategorised expense adds nothing (badge just says "Netted off").
+      netted_categories: netted ? [...new Set(linked_to.map((l) => l.other_category))].filter((c) => c !== "Uncategorised") : [],
     };
   });
 }
@@ -253,6 +284,7 @@ export async function incomingCandidates(store: Store, f: CandidateFilter) {
       id: t.id,
       local_date: t.local_date,
       description: t.description,
+      label: label(t),
       merchant_name: t.merchant_name,
       amount: t.amount,
       allocated: totals.fromIncome.get(t.id) ?? 0,
@@ -297,7 +329,7 @@ export async function matchAndLink(
   const brief = (t: Transaction): Brief => ({
     id: t.id,
     date: t.local_date,
-    description: clip(t.merchant_name ?? t.description),
+    description: clip(label(t)),
     amount: t.amount,
     remaining: remainingOf(t, totals),
   });

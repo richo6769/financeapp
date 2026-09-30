@@ -20,7 +20,7 @@ export const GET = (req: Request) =>
       from: p.get("from") ? parseLocalDate(p.get("from")!) : undefined,
       to: p.get("to") ? parseLocalDate(p.get("to")!) : undefined,
     });
-    const visible = p.get("category") === "uncategorised" ? rows.filter((t) => !t.removed_at) : rows;
+    const visible = rows; // "uncategorised" already excludes removed + fully netted-off rows
     const pageRows = visible.slice(0, limit);
     const [cats, page, { trips, membership }, ious] = await Promise.all([
       store.select("categories"),

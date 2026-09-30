@@ -131,6 +131,17 @@ it isn't counted twice; any remainder still counts. You can unlink at any time.
 Links can't exceed the expense or the incoming amount (checked in the app and by
 a database trigger).
 
+An incoming payment that's **fully** linked needs no category of its own: it
+shows "<expense category> · netted off" (or just "Netted off" if the expense is
+uncategorised), leaves the Uncategorised inbox and isn't counted as
+uncategorised anywhere. The badge follows the expense if you recategorise it. A
+**partially** linked payment stays in the inbox with "$X unallocated" beside the
+dropdown — only that remainder needs a category. Unlinking returns the payment to
+Uncategorised, or to the category it had before. This is worked out from the
+links themselves, so it applies the same way whether you link in the app, tap
+Accept on a suggestion, or ask the chat. Link labels use a cleaned-up bank
+description (e.g. "Everyday/Kak" instead of the full USD conversion text).
+
 ### IOUs, suggested net offs, trips, pay cycle, subscriptions, caps, recaps
 - **IOUs** — tap **IOU** on an expense ("Sam owes me $100") or tell the chat. When
   a payment whose bank line names that person is netted off against the expense,
