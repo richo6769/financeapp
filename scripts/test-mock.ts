@@ -67,7 +67,7 @@ async function main() {
   const all1 = await store.select("transactions");
   const oldest = all1.map((t) => t.local_date).sort()[0];
   assert.ok(oldest <= addDays(todayLocal(), -360), `backfill should reach ~12 months, oldest=${oldest}`);
-  ok(`first sync backfilled ${first.transactions_new} txns from ${oldest} (3 accounts, cursor-paginated)`);
+  ok(`first mock sync backfilled 12 months: ${first.transactions_new} txns from ${oldest} (3 accounts, cursor-paginated)`);
 
   const second = await runSync(store, client, "test");
   const all2 = await store.select("transactions");

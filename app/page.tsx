@@ -67,7 +67,7 @@ export default function Dashboard() {
     return (
       <div className="card text-center">
         <h2 className="text-lg font-semibold">Welcome 👋</h2>
-        <p className="mt-1 text-sm text-muted">Pull your accounts and the last 12 months of transactions.</p>
+        <p className="mt-1 text-sm text-muted">Pull your accounts and recent transactions.</p>
         <button
           className="btn-primary mt-4"
           disabled={first}
@@ -78,7 +78,7 @@ export default function Dashboard() {
             setFirst(false);
           }}
         >
-          {first ? "Syncing 12 months…" : "Run first sync"}
+          {first ? "Syncing…" : "Run first sync"}
         </button>
       </div>
     );

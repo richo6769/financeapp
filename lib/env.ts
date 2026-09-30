@@ -58,6 +58,24 @@ export function akahuMode(): "mock" | "live" {
   return "live";
 }
 
+export const DEFAULT_BACKFILL_MONTHS = 3;
+export const MAX_BACKFILL_MONTHS = 24;
+
+/**
+ * How many months the first live Akahu sync (and a full resync) pulls.
+ * BACKFILL_MONTHS=1..24, default 3. Read at call time so it can't go stale.
+ */
+export function backfillMonths(): number {
+  const raw = process.env.BACKFILL_MONTHS?.trim();
+  if (!raw) return DEFAULT_BACKFILL_MONTHS;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_BACKFILL_MONTHS) {
+    console.warn(`[env] BACKFILL_MONTHS="${raw}" is not a whole number from 1 to ${MAX_BACKFILL_MONTHS}; using ${DEFAULT_BACKFILL_MONTHS}`);
+    return DEFAULT_BACKFILL_MONTHS;
+  }
+  return n;
+}
+
 export function integrationStatus() {
   return {
     supabase: isSupabaseConfigured(),

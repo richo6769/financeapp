@@ -14,5 +14,7 @@ line(s.supabase, "Supabase", s.supabase ? "configured (login + Postgres)" : "not
 line(Boolean(env.supabaseServiceRoleKey), "Service", env.supabaseServiceRoleKey ? "service-role key set (cron can run)" : "SUPABASE_SERVICE_ROLE_KEY missing → cron sync will fail");
 line(Boolean(env.ownerEmail), "Owner", env.ownerEmail ? `sign-in restricted to ${env.ownerEmail}` : "OWNER_EMAIL missing → required once Supabase is configured");
 line(s.akahu === "live", "Akahu", s.akahu === "live" ? "LIVE bank data" : env.akahuAppToken && env.akahuUserToken ? "tokens set but mock (AKAHU_MODE=mock or Supabase missing)" : "mock data (tokens missing)");
+const { backfillMonths } = await import("@/lib/env");
+line(true, "Backfill", `first live sync pulls ${backfillMonths()} month(s) (BACKFILL_MONTHS)`);
 line(s.claude, "Claude", s.claude ? `live (${env.claudeModel})` : "offline pattern-matcher (ANTHROPIC_API_KEY missing)");
 line(Boolean(env.cronSecret), "Cron", env.cronSecret ? "CRON_SECRET set" : "CRON_SECRET missing → /api/cron/sync rejects all calls");
