@@ -91,10 +91,12 @@ The inbox groups transactions by merchant (money in and money out separately),
 biggest groups first, e.g. "Sushi Sama ×33".
 - **One tap files the whole group.** Buttons show the categories you pick by hand most often (rule-filed ones don't count), with the full list under **More…**.
 - **Create rule** is ticked by default for groups of 2+, so the merchant doesn't come back. The box shows the exact pattern.
-- **✨ Guess categories** asks Claude (your `CLAUDE_MODEL`) for a category per group and pre-fills it with a confidence level. Tap **Save all** to apply them, or **not this** to drop one. Nothing is saved until you tap.
+- **Guesses are ready when you open the inbox.** After each sync, Claude (your `CLAUDE_MODEL`) guesses a category for any *new* merchant group and pre-fills it with a confidence level. Tap **Save all** to apply them, or **not this** to drop one for good. Nothing is applied until you tap. **✨ Guess categories / Re-guess** asks again for everything not dismissed.
+  - Guesses are kept in `category_guesses` (run `supabase/migrations/20261001000000_category_guesses.sql`), so each merchant is only sent once.
   - Only the bank text, direction, bank type, Akahu category and a rounded typical amount are sent.
   - Answers must be one of your category names.
   - Without an API key it falls back to Akahu's category and obvious words.
+- **Undo** appears for 8 seconds after every save (one tap or Save all). It puts every affected transaction back exactly as it was, including ones a new rule re-filed. It also deletes a rule the save created, or restores one it changed.
 - **Show N** expands a group into its transactions for Net off, IOU or one-off picks.
 
 ### Categorisation precedence
@@ -210,9 +212,11 @@ Tools: `create_category`, `update_category`, `delete_category`, `set_budget`,
 2. **SQL Editor** → run the files in `supabase/migrations/` in order:
    `20260924000000_init.sql`, `20260924000100_seed_defaults.sql`,
    `20260925000000_reimbursement_links.sql`, `20260926000000_features.sql`,
-   `20260930000000_savings.sql`. (Already ran the first four? Just run the
-   savings one — it's safe either way, and the app adds the Savings category and
-   its rules to your existing data on next load.)
+   `20260930000000_savings.sql`, `20261001000000_category_guesses.sql`.
+   (Already set up? Just run any you haven't: the last two are safe to re-run.
+   The app adds the Savings category and its rules to existing data on next
+   load. Until `category_guesses` exists, the inbox works but guesses aren't
+   saved, and sync shows a warning.)
    (Or with the CLI: `supabase link --project-ref <ref> && supabase db push`.)
 3. **Register yourself as the only owner** (SQL Editor, once, with your email in lower case):
    ```sql

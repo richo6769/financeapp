@@ -25,6 +25,7 @@ function dateRange(from: string, to: string) {
 }
 
 export type Guess = { category_id: string; confidence: "high" | "medium" | "low" };
+export type Undo = { txns: unknown[]; rules_created: string[]; rules_changed: unknown[] };
 
 /**
  * One merchant's uncategorised transactions. Tapping a category saves the
@@ -49,7 +50,7 @@ export default function InboxGroup({
   onDismissGuess: () => void;
   rule: boolean;
   onRuleChange: (v: boolean) => void;
-  onSaved: (msg: string) => void;
+  onSaved: (msg: string, undo?: Undo) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
@@ -61,11 +62,11 @@ export default function InboxGroup({
   async function save(categoryId: string) {
     setBusy(true);
     try {
-      const r = await api<{ updated: number; rules: string[] }>("/api/inbox", {
+      const r = await api<{ updated: number; rules: string[]; undo: Undo }>("/api/inbox", {
         method: "POST",
         json: { picks: [{ key: g.key, category_id: categoryId, create_rule: rule }] },
       });
-      onSaved(`${g.label} → ${name(categoryId)} (${r.updated})${r.rules.length ? ` · rule ${r.rules[0]}` : ""}`);
+      onSaved(`${g.label} → ${name(categoryId)} (${r.updated})${r.rules.length ? ` · rule ${r.rules[0]}` : ""}`, r.undo);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed");
     } finally {
