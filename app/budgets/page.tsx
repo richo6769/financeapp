@@ -7,7 +7,7 @@ import { api, money } from "@/lib/client";
 import type { Cat } from "@/components/types";
 
 type Budget = { category_id: string; amount_monthly: number; period: string; period_amount: number };
-type Data = { categories: Cat[]; budgets: Budget[]; overall_monthly_cap: number | null };
+type Data = { categories: Cat[]; budgets: Budget[]; overall_monthly_cap: number | null; monthly_savings_goal: number | null };
 type Caps = { all: { category_id: string; amount: number }[]; caps: { category_id: string; spent: number; pct: number; level: string }[] };
 const PERIODS = ["monthly", "weekly", "fortnightly", "yearly"] as const;
 
@@ -40,6 +40,13 @@ export default function Budgets() {
       {msg && <p className="rounded-xl bg-accent-soft px-3 py-2 text-sm" role="status">{msg}</p>}
 
       <OverallCap value={data.overall_monthly_cap} onSaved={(m) => { flash(m); reload(); }} />
+      <OverallCap
+        value={data.monthly_savings_goal}
+        onSaved={(m) => { flash(m); reload(); }}
+        field="savings_goal"
+        title="Monthly savings goal"
+        hint="Money to Sharesies/Feijoa counts as saved"
+      />
 
       <ul className="card divide-y divide-border py-1">
         {roots.map((r) => (
@@ -91,7 +98,19 @@ export default function Budgets() {
   );
 }
 
-function OverallCap({ value, onSaved }: { value: number | null; onSaved: (m: string) => void }) {
+function OverallCap({
+  value,
+  onSaved,
+  field = "overall",
+  title = "Overall monthly cap",
+  hint = "optional",
+}: {
+  value: number | null;
+  onSaved: (m: string) => void;
+  field?: "overall" | "savings_goal";
+  title?: string;
+  hint?: string;
+}) {
   const [amount, setAmount] = useState(value?.toString() ?? "");
   const [period, setPeriod] = useState("monthly");
   return (
@@ -99,13 +118,13 @@ function OverallCap({ value, onSaved }: { value: number | null; onSaved: (m: str
       className="card flex flex-wrap items-center gap-2"
       onSubmit={async (e) => {
         e.preventDefault();
-        const r = await api<{ explanation: string }>("/api/budgets", { method: "PUT", json: { overall: true, amount: amount === "" ? null : Number(amount), period } });
-        onSaved(`Overall cap: ${r.explanation}`);
+        const r = await api<{ explanation: string }>("/api/budgets", { method: "PUT", json: { [field]: true, amount: amount === "" ? null : Number(amount), period } });
+        onSaved(`${title}: ${r.explanation}`);
       }}
     >
-      <span className="w-full text-sm font-semibold">Overall monthly cap <span className="font-normal text-muted">(optional)</span></span>
-      <input className="input w-28" inputMode="decimal" placeholder="None" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Overall cap amount" />
-      <select className="input text-sm" value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="Cap period">
+      <span className="w-full text-sm font-semibold">{title} <span className="font-normal text-muted">({hint})</span></span>
+      <input className="input w-28" inputMode="decimal" placeholder="None" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label={`${title} amount`} />
+      <select className="input text-sm" value={period} onChange={(e) => setPeriod(e.target.value)} aria-label={`${title} period`}>
         {PERIODS.map((p) => <option key={p}>{p}</option>)}
       </select>
       <button className="btn">Save</button>

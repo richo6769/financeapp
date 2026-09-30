@@ -73,7 +73,7 @@ async function main() {
   assert.equal(seen.length, 2);
   assert.equal(seen[0].model, "claude-sonnet-5");
   assert.deepEqual(seen[0].thinking, { type: "adaptive" });
-  assert.equal(seen[0].tools!.length, 18);
+  assert.equal(seen[0].tools!.length, 19);
   assert.match((seen[0].system as { text: string }[])[1].text, /Categories:[\s\S]*Rent \(expense\)/);
   const toolResults = seen[1].messages[seen[1].messages.length - 1].content as { tool_use_id: string; content: string }[];
   assert.equal(toolResults.length, 2, "both parallel tool results in one user message");

@@ -1,7 +1,8 @@
 // Row shapes shared by the Supabase and local stores. Money is NZD, stored as
 // numbers with 2dp. Debits are negative, credits positive (Akahu convention).
 
-export type CategoryKind = "expense" | "income" | "transfer";
+/** savings = money moved into my savings accounts (excluded from spending, counted as "saved"). */
+export type CategoryKind = "expense" | "income" | "transfer" | "savings";
 
 export interface Account {
   id: string; // Akahu account _id (or mock id)
@@ -105,6 +106,7 @@ export interface Settings {
   overall_monthly_cap: number | null;
   pay_frequency: PayFrequency | null;
   next_payday: string | null; // YYYY-MM-DD, any payday works as the anchor
+  monthly_savings_goal: number | null;
   updated_at: string;
 }
 

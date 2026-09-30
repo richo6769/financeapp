@@ -135,6 +135,21 @@ export async function runMockPlanner(
     return done(describeLink(r));
   }
 
+  // --- Savings: "savings goal 500 a month" / "how much have I saved this month?"
+  m = t.match(/^(?:set\s+(?:my\s+|a\s+)?)?savings?\s+goal\s+(?:to\s+|of\s+|is\s+)?\$?(\d+(?:\.\d{1,2})?)(?:\s*(?:a|per|\/)\s*(week|fortnight|month|year))?\.?$/i);
+  if (m) {
+    const p = (m[2] ?? "month").toLowerCase();
+    const period = p === "week" ? "weekly" : p === "fortnight" ? "fortnightly" : p === "year" ? "yearly" : "monthly";
+    const r = await call("set_savings_goal", { amount: Number(m[1]), period });
+    return done(r.error ? String(r.error) : `Savings goal set: ${r.conversion}. Money to Sharesies/Feijoa counts toward it.`);
+  }
+  if (/how much (?:have i |did i )?saved?\b|what have i saved|savings (?:this|so far)/i.test(lower)) {
+    const s = await call("get_budget_status", {});
+    return done(
+      `You've saved **${formatNZD(s.saved as number)}** this month (Sharesies + Feijoa, net of withdrawals)${s.savings_goal != null ? ` — ${s.savings_pct}% of your ${formatNZD(s.savings_goal as number)} goal` : ""}.`,
+    );
+  }
+
   // --- IOUs: "Sam owes me 100 for Snus Direct" / "Sam owes me $50"
   m = t.match(/^(.+?)\s+owes\s+me\s+\$?(\d+(?:\.\d{1,2})?)(?:\s+(?:for|on)\s+(?:the\s+|my\s+)?(.+?))?\.?$/i);
   if (m && !/^who\b/i.test(m[1])) {

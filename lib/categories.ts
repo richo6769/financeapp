@@ -1,6 +1,11 @@
-import type { Category } from "@/lib/types";
+import type { Category, CategoryKind } from "@/lib/types";
 import { normalise } from "@/lib/categorise";
 import { UserError } from "@/lib/errors";
+
+/** Money moving between my own accounts: never spending, never income. */
+export function isInternalKind(kind: CategoryKind | undefined | null): boolean {
+  return kind === "transfer" || kind === "savings";
+}
 
 export function rootOf(cats: Category[], id: string | null): Category | undefined {
   let c = cats.find((x) => x.id === id);

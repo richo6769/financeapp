@@ -3,7 +3,7 @@ import type { Store } from "@/lib/store/types";
 import type { Category, Transaction, Trip, TripTransaction } from "@/lib/types";
 import { daysBetween, eachDay, todayLocal } from "@/lib/dates";
 import { fromCents, toCents, type Cents } from "@/lib/money";
-import { categoryLabel, rootOf, requireCategory } from "@/lib/categories";
+import { categoryLabel, isInternalKind, rootOf } from "@/lib/categories";
 import { normalise } from "@/lib/categorise";
 import { applyNet, loadLinkTotals } from "@/lib/reimburse";
 import { UserError } from "@/lib/errors";
@@ -22,7 +22,7 @@ export function isTravelCategory(cats: Category[], categoryId: string | null): b
 function autoMember(t: Transaction, trip: Trip, cats: Category[]): boolean {
   if (t.is_transfer || t.removed_at) return false;
   if (t.local_date < trip.start_date || t.local_date > trip.end_date) return false;
-  if (rootOf(cats, t.category_id)?.kind === "income") return false;
+  if (rootOf(cats, t.category_id)?.kind === "income" || isInternalKind(rootOf(cats, t.category_id)?.kind)) return false;
   if (trip.include_all) return t.amount < 0 || rootOf(cats, t.category_id)?.kind === "expense";
   return Boolean(t.foreign_currency && t.foreign_currency !== "NZD") || isTravelCategory(cats, t.category_id);
 }
@@ -140,7 +140,7 @@ export async function tripSummary(store: Store, tripId: string, today = todayLoc
   const members = applyNet(allTxns.filter((t) => membership.get(t.id) === trip.id), links);
   const spend = (t: Transaction): Cents => {
     const root = rootOf(cats, t.category_id);
-    if (t.is_transfer || t.removed_at || root?.kind === "income" || root?.kind === "transfer") return 0;
+    if (t.is_transfer || t.removed_at || root?.kind === "income" || isInternalKind(root?.kind)) return 0;
     if (!root) return t.amount < 0 ? -toCents(t.amount) : 0;
     return -toCents(t.amount);
   };
