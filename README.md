@@ -37,7 +37,7 @@ npm run gen:seed     # regenerate the seed migration after editing lib/seed.ts
 app/                       Next.js App Router (mobile-first UI + route handlers)
   page.tsx                 Dashboard: budgets, totals, days left, top merchants, 6-month trend, pending, accounts
   transactions/            Search + filters (account/category/date) + inline recategorise + add cash
-  inbox/                   Uncategorised triage
+  inbox/                   Uncategorised triage (grouped by merchant, one-tap, guesses)
   budgets/  rules/         Category/subcategory CRUD, budgets, overall cap, rules
   chat/                    Chat UI (history persisted)
   api/…                    JSON endpoints (all server-side; tokens never reach the browser)
@@ -85,6 +85,17 @@ Settings → Bank sync.
    never deleted; restored if they reappear). Amounts the bank edits are updated,
    and any net-off link that no longer fits is removed.
 9. A `sync_log` row records the result + warnings. Triggered by **Sync now** or the daily cron.
+
+### Uncategorised inbox
+The inbox groups transactions by merchant (money in and money out separately),
+biggest groups first, e.g. "Sushi Sama ×33".
+- **One tap files the whole group.** Buttons show the categories you pick by hand most often (rule-filed ones don't count), with the full list under **More…**.
+- **Create rule** is ticked by default for groups of 2+, so the merchant doesn't come back. The box shows the exact pattern.
+- **✨ Guess categories** asks Claude (your `CLAUDE_MODEL`) for a category per group and pre-fills it with a confidence level. Tap **Save all** to apply them, or **not this** to drop one. Nothing is saved until you tap.
+  - Only the bank text, direction, bank type, Akahu category and a rounded typical amount are sent.
+  - Answers must be one of your category names.
+  - Without an API key it falls back to Akahu's category and obvious words.
+- **Show N** expands a group into its transactions for Net off, IOU or one-off picks.
 
 ### Categorisation precedence
 **Your manual choice › your rules › own-account transfer detection › merchant memory › Akahu enrichment hint › obvious words in a card charge › Uncategorised.**

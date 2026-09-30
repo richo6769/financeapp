@@ -30,6 +30,7 @@ import { runSync, purgeMockData } from "@/lib/sync";
 import { executeTool } from "@/lib/chat/tools";
 import { runMockPlanner } from "@/lib/chat/mock";
 import { clip, cleanDescription } from "@/lib/text";
+import { categoriseGroups, guessCategories, inboxGroups, parseGuesses, quickCategories } from "@/lib/inbox";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "financeapp-features-"));
 let n = 0;
@@ -983,6 +984,71 @@ async function bankTransfers() {
   ok('"To:/From: 06-0998-0835107-03 … Transfer" → Transfers (-03 = -003), and older Uncategorised rows are fixed on the next sync');
 }
 
+async function groupedInbox() {
+  section("Grouped inbox, one-tap categories, guesses");
+  const store = await freshStore();
+  const cats = await store.select("categories");
+  const id = (n: string) => cats.find((c) => c.name === n)!.id;
+  await add(store, [
+    { desc: "FLIGHTNETWRK1133124432 ONLINE", amount: -420, date: addDays(today, -9) },
+    { desc: "FLIGHTNETWRK1134868134 ONLINE", amount: -380, date: addDays(today, -2) },
+    { desc: "FLIGHTNETWRK REFUND 99812345", amount: 120, date: addDays(today, -1) },
+    { desc: "BAMBINA CAFE PONSONBY", amount: -14.5, date: addDays(today, -3), akahu: "t_cafe" },
+    { desc: "J SMITH", amount: 60, date: addDays(today, -4) },
+    // history for the quick picks: Groceries used most
+    ...Array.from({ length: 4 }, (_, i) => ({ desc: `SHOP ${i}`, amount: -10, date: addDays(today, -20 - i), category: "Groceries" })),
+    { desc: "BAR", amount: -10, date: addDays(today, -30), category: "Bars" },
+    // rule-filed rows never reach the inbox, so they don't count
+    ...Array.from({ length: 6 }, (_, i) => ({ desc: `SHARESIES ${i}`, amount: -50, date: addDays(today, -10 - i), category: "Savings", source: "rule" as const })),
+  ]);
+  let groups = await inboxGroups(store);
+  const flights = groups.find((g) => g.key === "debit:flightnetwrk")!;
+  assert.equal(flights.count, 2);
+  assert.equal(flights.total, -800);
+  assert.ok(flights.first_date < flights.last_date, "date range runs oldest → newest");
+  assert.equal(flights.rule.pattern, "flightnetwrk");
+  assert.ok(groups.some((g) => g.direction === "credit" && g.label.startsWith("Flightnetwrk")), "a refund from the same merchant is its own group");
+  assert.equal(groups[0].key, flights.key, "biggest groups first");
+  ok("inbox groups by merchant (2 Flight Network charges, -$800) with money in/out kept apart");
+
+  const quick = await quickCategories(store);
+  assert.equal(quick.debit[0], id("Groceries"), "most-used first");
+  assert.ok(!quick.debit.includes(id("Savings")), "rule-filed Savings isn't a quick pick");
+  assert.ok(quick.debit.includes(id("Bars")) && quick.debit.includes(id("Eating Out")) && quick.debit.length === 5);
+  assert.ok(quick.credit.includes(id("Transfers")));
+  ok("quick picks: the categories you pick by hand most, topped up with defaults (rule-filed ones don't count)");
+
+  // One tap categorises the group and creates the rule.
+  const r = await categoriseGroups(store, [{ key: flights.key, category_id: id("Travel"), create_rule: true }]);
+  assert.equal(r.updated, 3, "2 charges + the refund, which the new rule also catches");
+  assert.deepEqual(r.rules, ['"flightnetwrk" → Travel']);
+  const [refund] = await store.select("transactions", { eq: { description: "FLIGHTNETWRK REFUND 99812345" } });
+  assert.equal(refund.category_id, id("Travel"));
+  const [later] = await add(store, [{ desc: "FLIGHTNETWRK1139999999 ONLINE", amount: -99, date: today }]);
+  const rules = await store.select("rules");
+  assert.equal(findRule(rules, later)?.category_id, id("Travel"), "the rule catches the next one");
+  // Without the rule box, only the group is filed.
+  groups = await inboxGroups(store);
+  const smith = groups.find((g) => g.label.toLowerCase().includes("smith"))!;
+  const before = (await store.select("rules")).length;
+  await categoriseGroups(store, [{ key: smith.key, category_id: id("Other"), create_rule: false }]);
+  assert.equal((await store.select("rules")).length, before);
+  assert.ok(!(await inboxGroups(store)).some((g) => g.key === smith.key));
+  ok("one tap files the whole group; with the rule box ticked a rule is created, unticked it isn't");
+
+  // Guesses: never saved on their own; offline falls back to obvious words.
+  const g = await guessCategories(store);
+  assert.equal(g.source, "offline");
+  const cafe = (await inboxGroups(store)).find((x) => x.label.startsWith("Bambina"))!;
+  assert.equal(g.guesses[cafe.key]?.category_id, id("Eating Out"));
+  assert.ok((await inboxGroups(store)).some((x) => x.key === cafe.key), "guessing doesn't save anything");
+  assert.deepEqual(parseGuesses('{"guesses":[{"i":0,"category":"Travel","confidence":"high"},{"i":"x"},{"i":1,"category":"Bars","confidence":"sure"}]}'), [
+    { i: 0, category: "Travel", confidence: "high" },
+  ]);
+  assert.deepEqual(parseGuesses("not json"), []);
+  ok("guesses pre-fill only (nothing saved); offline guess Bambina Cafe → Eating Out; malformed model output is ignored");
+}
+
 async function main() {
   await money();
   await dst();
@@ -1001,6 +1067,7 @@ async function main() {
   await uniqueIds();
   await cardKeywords();
   await bankTransfers();
+  await groupedInbox();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);
