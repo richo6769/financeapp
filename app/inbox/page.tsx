@@ -1,22 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApi } from "@/components/useApi";
 import { api } from "@/lib/client";
-import InboxGroup, { type Group, type Guess } from "@/components/InboxGroup";
+import InboxGroup, { type Group, type Guess, type Undo } from "@/components/InboxGroup";
 import type { Account, Cat } from "@/components/types";
 
 /**
  * Quick triage of uncategorised transactions, grouped by merchant. One tap
- * categorises the whole group; "Guess categories" pre-fills a guess per group
- * and "Save all" applies them (nothing is saved without a tap).
+ * categorises the whole group. Guesses are made after each sync (or with
+ * "Guess categories") and pre-filled; "Save all" applies them. Nothing is
+ * saved without a tap, and every save can be undone for a few seconds.
  */
 export default function Inbox() {
-  const inbox = useApi<{ total: number; groups: Group[]; quick: { debit: string[]; credit: string[] } }>("/api/inbox");
+  const inbox = useApi<{ total: number; groups: Group[]; quick: { debit: string[]; credit: string[] }; guesses: Record<string, Guess> }>(
+    "/api/inbox",
+  );
   const cats = useApi<{ categories: Cat[] }>("/api/categories");
   const accounts = useApi<Account[]>("/api/accounts");
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; undo?: Undo } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [guesses, setGuesses] = useState<Record<string, Guess>>({});
+  useEffect(() => setGuesses(inbox.data?.guesses ?? {}), [inbox.data]);
   const [guessing, setGuessing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [ruleFor, setRuleFor] = useState<Record<string, boolean>>({});
@@ -25,9 +30,30 @@ export default function Inbox() {
   const pending = groups.filter((g) => guesses[g.key]);
   const wantsRule = (g: Group) => ruleFor[g.key] ?? g.count > 1;
 
-  function flash(msg: string) {
-    setToast(msg);
-    setTimeout(() => setToast(null), 4000);
+  function flash(msg: string, undo?: Undo) {
+    setToast({ msg, undo });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), undo ? 8000 : 4000);
+  }
+
+  async function undo(u: Undo) {
+    setToast(null);
+    try {
+      const r = await api<{ restored: number }>("/api/inbox/undo", { method: "POST", json: { undo: u } });
+      flash(`Undone — ${r.restored} transaction${r.restored === 1 ? "" : "s"} back as before`);
+      inbox.reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Undo failed");
+    }
+  }
+
+  async function dismiss(key: string) {
+    setGuesses((cur) => {
+      const next = { ...cur };
+      delete next[key];
+      return next;
+    });
+    await api("/api/inbox/guess", { method: "DELETE", json: { key } }).catch(() => {});
   }
 
   async function guess() {
@@ -53,12 +79,11 @@ export default function Inbox() {
   async function saveAll() {
     setSaving(true);
     try {
-      const r = await api<{ updated: number; rules: string[] }>("/api/inbox", {
+      const r = await api<{ updated: number; rules: string[]; undo: Undo }>("/api/inbox", {
         method: "POST",
         json: { picks: pending.map((g) => ({ key: g.key, category_id: guesses[g.key].category_id, create_rule: wantsRule(g) })) },
       });
-      setGuesses({});
-      flash(`Saved ${pending.length} group${pending.length === 1 ? "" : "s"} (${r.updated} transactions)${r.rules.length ? ` · ${r.rules.length} rules` : ""}`);
+      flash(`Saved ${pending.length} group${pending.length === 1 ? "" : "s"} (${r.updated} transactions)${r.rules.length ? ` · ${r.rules.length} rule${r.rules.length === 1 ? "" : "s"}` : ""}`, r.undo);
       inbox.reload();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed");
@@ -82,22 +107,26 @@ export default function Inbox() {
       {groups.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <button className="btn" onClick={guess} disabled={guessing || saving}>
-            {guessing ? "Guessing…" : "✨ Guess categories"}
+            {guessing ? "Guessing…" : pending.length ? "✨ Re-guess" : "✨ Guess categories"}
           </button>
           {pending.length > 0 && (
-            <>
-              <button className="btn-primary" onClick={saveAll} disabled={saving}>
-                {saving ? "Saving…" : `Save all ${pending.length}`}
-              </button>
-              <button className="text-sm text-muted underline" onClick={() => setGuesses({})}>
-                Clear guesses
-              </button>
-            </>
+            <button className="btn-primary" onClick={saveAll} disabled={saving}>
+              {saving ? "Saving…" : `Save all ${pending.length} guess${pending.length === 1 ? "" : "es"}`}
+            </button>
           )}
         </div>
       )}
 
-      {toast && <p className="rounded-xl bg-accent-soft px-3 py-2 text-sm" role="status">{toast}</p>}
+      {toast && (
+        <div className="sticky top-2 z-10 flex items-center justify-between gap-3 rounded-xl bg-accent-soft px-3 py-2 text-sm" role="status">
+          <span>{toast.msg}</span>
+          {toast.undo && (
+            <button className="btn shrink-0 px-3 py-1 text-xs" onClick={() => undo(toast.undo!)}>
+              Undo
+            </button>
+          )}
+        </div>
+      )}
       {inbox.data && groups.length === 0 && <p className="card text-center text-sm">🎉 Inbox zero — everything is categorised.</p>}
       {groups.length > 0 && (
         <ul className="card divide-y divide-border py-1">
@@ -109,17 +138,11 @@ export default function Inbox() {
               quick={inbox.data!.quick[g.direction]}
               accounts={accounts.data ?? []}
               guess={guesses[g.key]}
-              onDismissGuess={() =>
-                setGuesses((cur) => {
-                  const next = { ...cur };
-                  delete next[g.key];
-                  return next;
-                })
-              }
+              onDismissGuess={() => dismiss(g.key)}
               rule={wantsRule(g)}
               onRuleChange={(v) => setRuleFor((cur) => ({ ...cur, [g.key]: v }))}
-              onSaved={(msg) => {
-                flash(msg);
+              onSaved={(msg, u) => {
+                flash(msg, u);
                 inbox.reload();
               }}
             />

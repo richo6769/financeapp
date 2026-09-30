@@ -8,6 +8,7 @@ import { linkTotals, removeLinksFor } from "@/lib/reimburse";
 import { reverseIouForLink } from "@/lib/iou";
 import { fromCents, toCents } from "@/lib/money";
 import { backfillMonths } from "@/lib/env";
+import { autoGuess } from "@/lib/inbox";
 
 /** Mock data is generated, so demo mode always shows a full year of history. */
 export const MOCK_BACKFILL_MONTHS = 12;
@@ -230,6 +231,18 @@ export async function runSync(
     }
     for (const { ids: batch, patch } of byDecision.values()) {
       await store.update("transactions", { in: { id: batch } }, patch);
+    }
+
+    // Pre-fill guesses for new merchant groups in the inbox (never applied without a tap).
+    try {
+      await autoGuess(store);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      warnings.push(
+        /category_guesses/.test(msg)
+          ? "Couldn't save category guesses: run supabase/migrations/20261001000000_category_guesses.sql"
+          : `Couldn't guess categories: ${msg}`,
+      );
     }
 
     // Pending: replace wholesale (settled versions arrive with an _id). The

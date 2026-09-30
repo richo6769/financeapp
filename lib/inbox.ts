@@ -98,17 +98,31 @@ export async function quickCategories(store: Store, n = 5): Promise<{ debit: str
   return { debit: pick("debit"), credit: pick("credit") };
 }
 
+/** Exactly what a save changed, so Undo can put it back. */
+export interface UndoToken {
+  txns: { id: string; category_id: string | null; category_source: Transaction["category_source"]; is_transfer: boolean }[];
+  rules_created: string[];
+  rules_changed: { id: string; category_id: string }[];
+}
+
 /**
  * Categorise whole groups: every transaction in the group is set by hand, and
  * with create_rule a rule is made (and applied) so they don't come back.
+ * Returns an undo token covering everything that changed, rules included.
  */
 export async function categoriseGroups(
   store: Store,
   picks: { key: string; category_id: string; create_rule: boolean }[],
-): Promise<{ updated: number; rules: string[] }> {
-  if (!picks.length) return { updated: 0, rules: [] };
+): Promise<{ updated: number; rules: string[]; undo: UndoToken }> {
+  const empty: UndoToken = { txns: [], rules_created: [], rules_changed: [] };
+  if (!picks.length) return { updated: 0, rules: [], undo: empty };
   if (picks.length > 500) throw new UserError("Too many groups at once");
-  const [groups, cats] = await Promise.all([inboxGroups(store), store.select("categories")]);
+  const [groups, cats, txBefore, rulesBefore] = await Promise.all([
+    inboxGroups(store),
+    store.select("categories"),
+    store.select("transactions"),
+    store.select("rules"),
+  ]);
   let updated = 0;
   const rules: string[] = [];
   for (const p of picks) {
@@ -127,7 +141,54 @@ export async function categoriseGroups(
       rules.push(`"${g.rule.pattern}" → ${cat.name}`);
     }
   }
-  return { updated, rules };
+  const [txAfter, rulesAfter] = await Promise.all([store.select("transactions"), store.select("rules")]);
+  const prevTx = new Map(txBefore.map((t) => [t.id, t]));
+  const prevRule = new Map(rulesBefore.map((r) => [r.id, r]));
+  const undo: UndoToken = {
+    txns: txAfter
+      .map((t) => ({ now: t, was: prevTx.get(t.id) }))
+      .filter(({ now, was }) => was && (was.category_id !== now.category_id || was.category_source !== now.category_source || was.is_transfer !== now.is_transfer))
+      .map(({ was }) => ({ id: was!.id, category_id: was!.category_id, category_source: was!.category_source, is_transfer: was!.is_transfer })),
+    rules_created: rulesAfter.filter((r) => !prevRule.has(r.id)).map((r) => r.id),
+    rules_changed: rulesAfter
+      .filter((r) => prevRule.has(r.id) && prevRule.get(r.id)!.category_id !== r.category_id)
+      .map((r) => ({ id: r.id, category_id: prevRule.get(r.id)!.category_id })),
+  };
+  return { updated, rules, undo };
+}
+
+const SOURCES = ["manual", "rule", "transfer", "akahu", "merchant", null];
+
+/** Put back exactly what a save changed: transactions, new rules removed, edited rules restored. */
+export async function undoCategorise(store: Store, raw: unknown): Promise<{ restored: number }> {
+  const u = raw as Partial<UndoToken> | null;
+  if (!u || !Array.isArray(u.txns) || !Array.isArray(u.rules_created) || !Array.isArray(u.rules_changed)) {
+    throw new UserError("Nothing to undo");
+  }
+  if (u.txns.length > 20_000 || u.rules_created.length > 500 || u.rules_changed.length > 500) throw new UserError("Undo is too large");
+  const cats = new Set((await store.select("categories")).map((c) => c.id));
+  const str = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 100;
+  // Batch identical restores together.
+  const batches = new Map<string, { patch: Partial<Transaction>; ids: string[] }>();
+  for (const t of u.txns) {
+    if (!t || !str(t.id)) throw new UserError("Bad undo data");
+    if (t.category_id !== null && !(str(t.category_id) && cats.has(t.category_id))) continue; // category since deleted
+    if (!SOURCES.includes(t.category_source ?? null) || typeof t.is_transfer !== "boolean") throw new UserError("Bad undo data");
+    const patch = { category_id: t.category_id, category_source: t.category_source ?? null, is_transfer: t.is_transfer };
+    const k = JSON.stringify(patch);
+    if (!batches.has(k)) batches.set(k, { patch, ids: [] });
+    batches.get(k)!.ids.push(t.id);
+  }
+  let restored = 0;
+  for (const { patch, ids } of batches.values()) restored += await store.update("transactions", { in: { id: ids } }, patch);
+  const created = u.rules_created.filter(str);
+  if (created.length) await store.remove("rules", { in: { id: created } });
+  for (const r of u.rules_changed) {
+    if (r && str(r.id) && str(r.category_id) && cats.has(r.category_id)) {
+      await store.update("rules", { eq: { id: r.id } }, { category_id: r.category_id });
+    }
+  }
+  return { restored };
 }
 
 // ------------------------------------------------------------------ guesses
@@ -147,20 +208,80 @@ function heuristicGuess(cats: Category[], t: Transaction): Guess | null {
 }
 
 /**
- * Guess a category per group. Nothing is saved: the UI pre-fills the choice
- * and the user taps Save all. Only bank text, direction, type and a rounded
- * amount are sent to Claude; the answer is constrained to your category names.
+ * Guess a category per group and remember it (category_guesses). Guesses are
+ * never applied on their own: the inbox pre-fills them and the user taps Save
+ * all. Dismissed ("not this") groups are never guessed again. With onlyNew,
+ * only groups that have never been guessed are sent (used after each sync),
+ * so the same merchants aren't paid for twice.
  */
 export async function guessCategories(
   store: Store,
-  keys?: string[],
-): Promise<{ source: "claude" | "offline"; guesses: Record<string, Guess> }> {
-  const [groups, cats, txns] = await Promise.all([
-    inboxGroups(store),
+  opts: { keys?: string[]; onlyNew?: boolean } = {},
+): Promise<{ source: "claude" | "offline"; guessed: number; guesses: Record<string, Guess> }> {
+  const [groups, stored] = await Promise.all([inboxGroups(store), store.select("category_guesses")]);
+  const byKey = new Map(stored.map((r) => [r.group_key, r]));
+  let wanted = groups.filter((g) => byKey.get(g.key)?.status !== "dismissed");
+  if (opts.keys) wanted = wanted.filter((g) => opts.keys!.includes(g.key));
+  if (opts.onlyNew) wanted = wanted.filter((g) => !byKey.has(g.key));
+  wanted = wanted.slice(0, 300);
+  const { source, guesses } = wanted.length
+    ? await computeGuesses(store, wanted)
+    : { source: isClaudeConfigured() ? ("claude" as const) : ("offline" as const), guesses: {} as Record<string, Guess> };
+  if (wanted.length) {
+    // Groups with no guess are remembered too (category_id null), so a sync doesn't re-ask about them.
+    await store.upsert(
+      "category_guesses",
+      wanted.map((g) => ({
+        group_key: g.key,
+        category_id: guesses[g.key]?.category_id ?? null,
+        confidence: guesses[g.key]?.confidence ?? null,
+        status: "pending" as const,
+        source,
+      })),
+      "user_id,group_key",
+    );
+  }
+  return { source, guessed: Object.keys(guesses).length, guesses: await storedGuesses(store, groups) };
+}
+
+/** Pending guesses for the groups currently in the inbox. */
+export async function storedGuesses(store: Store, groups?: InboxGroup[]): Promise<Record<string, Guess>> {
+  const [rows, cats, gs] = await Promise.all([
+    store.select("category_guesses", { eq: { status: "pending" } }),
     store.select("categories"),
-    store.select("transactions", { eq: { category_id: null } }),
+    groups ? Promise.resolve(groups) : inboxGroups(store),
   ]);
-  const wanted = (keys ? groups.filter((g) => keys.includes(g.key)) : groups).slice(0, 300);
+  const live = new Set(gs.map((g) => g.key));
+  const catIds = new Set(cats.map((c) => c.id));
+  const out: Record<string, Guess> = {};
+  for (const r of rows) {
+    if (r.category_id && catIds.has(r.category_id) && live.has(r.group_key)) {
+      out[r.group_key] = { category_id: r.category_id, confidence: r.confidence ?? "low" };
+    }
+  }
+  return out;
+}
+
+/** "not this": drop the guess and don't guess this group again. */
+export async function dismissGuess(store: Store, key: string): Promise<void> {
+  if (!key || key.length > 300) throw new UserError("Bad group");
+  await store.upsert("category_guesses", [{ group_key: key, category_id: null, confidence: null, status: "dismissed" as const }], "user_id,group_key");
+}
+
+/** After a sync: forget pending guesses for groups that are gone, then guess any new groups. */
+export async function autoGuess(store: Store): Promise<number> {
+  const [groups, pending] = await Promise.all([inboxGroups(store), store.select("category_guesses", { eq: { status: "pending" } })]);
+  const live = new Set(groups.map((g) => g.key));
+  const stale = pending.filter((r) => !live.has(r.group_key)).map((r) => r.id);
+  if (stale.length) await store.remove("category_guesses", { in: { id: stale } });
+  return (await guessCategories(store, { onlyNew: true })).guessed;
+}
+
+async function computeGuesses(
+  store: Store,
+  wanted: InboxGroup[],
+): Promise<{ source: "claude" | "offline"; guesses: Record<string, Guess> }> {
+  const [cats, txns] = await Promise.all([store.select("categories"), store.select("transactions", { eq: { category_id: null } })]);
   const byId = new Map(txns.map((t) => [t.id, t]));
   const sample = (g: InboxGroup) => byId.get(g.ids[0])!;
 

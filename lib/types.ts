@@ -237,6 +237,18 @@ export interface WeeklyRecap {
   created_at: string;
 }
 
+/** Inbox guess for one merchant group; applied only when the user taps Save all. */
+export interface CategoryGuess {
+  id: string;
+  user_id: string;
+  group_key: string;
+  category_id: string | null;
+  confidence: "high" | "medium" | "low" | null;
+  status: "pending" | "dismissed";
+  source: "claude" | "offline";
+  created_at: string;
+}
+
 export interface Tables {
   accounts: Account;
   transactions: Transaction;
@@ -255,6 +267,7 @@ export interface Tables {
   subscription_prefs: SubscriptionPref;
   weekly_caps: WeeklyCap;
   weekly_recaps: WeeklyRecap;
+  category_guesses: CategoryGuess;
 }
 
 export type TableName = keyof Tables;

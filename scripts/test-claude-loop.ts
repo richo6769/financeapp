@@ -8,7 +8,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-type Req = { model: string; system: { text: string }[] | string; tools?: { name: string }[]; messages: { role: string; content: unknown }[]; thinking?: unknown };
+type Req = {
+  model: string;
+  system: { text: string }[] | string;
+  tools?: { name: string }[];
+  messages: { role: string; content: unknown }[];
+  thinking?: unknown;
+  output_config?: { format?: { type: string; schema: { properties: { guesses: { items: { properties: { category: { enum: string[] } } } } } } } };
+};
+const guessRequests: Req[] = [];
 const seen: Req[] = [];
 const recapRequests: Req[] = [];
 let recapReply = "";
@@ -18,6 +26,14 @@ const server = http.createServer((req, res) => {
   req.on("data", (c) => (body += c));
   req.on("end", () => {
     const r = JSON.parse(body) as Req;
+    if (r.output_config?.format) {
+      // Inbox category guesses (structured output): guess Rent for the first item.
+      guessRequests.push(r);
+      const text = JSON.stringify({ guesses: [{ i: 0, category: "Rent", confidence: "high" }] });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ id: "msg_guess", type: "message", role: "assistant", model: r.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
+      return;
+    }
     if (!r.tools) {
       // Weekly recap request (no tools): reply with whatever the test queued.
       recapRequests.push(r);
@@ -67,6 +83,11 @@ async function main() {
   const store = new LocalStore("u", path.join(dir, "db.json"));
   await ensureSeeded(store);
   await runSync(store, new MockAkahuClient(), "test");
+  assert.equal(guessRequests.length, 1, "sync asks Claude to guess the inbox once");
+  const enumNames = guessRequests[0].output_config!.format!.schema.properties.guesses.items.properties.category.enum;
+  assert.ok(enumNames.includes("Eating Out") && enumNames.includes("Rent"), "answers are limited to the user's categories");
+  assert.equal((await store.select("category_guesses", { eq: { status: "pending" } })).filter((g) => g.category_id).length, 1);
+  console.log("  ✓ sync pre-fills inbox guesses via Claude (structured output limited to your categories), saved for the inbox");
 
   const turn = await runChatTurn(store, [], "My rent is 450 a week. Also how much on Uber Eats lately?");
   assert.equal(turn.mode, "claude");

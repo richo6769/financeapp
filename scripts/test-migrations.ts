@@ -99,6 +99,14 @@ async function main() {
   await db.query(`delete from public.categories where name = 'Savings 2'`);
   ok("savings migration upgrades an older database (kind 'savings', monthly_savings_goal ≥ 0) and is idempotent");
 
+  // Category guesses: one per group, constrained values, re-runnable.
+  await db.exec(fs.readFileSync("supabase/migrations/20261001000000_category_guesses.sql", "utf8"));
+  await db.query(`insert into public.category_guesses (user_id, group_key, category_id, confidence) values ($1, 'debit:flightnetwrk', $2, 'high')`, [OWNER, catId]);
+  await rejects(db, `insert into public.category_guesses (user_id, group_key) values ($1, 'debit:flightnetwrk')`, /duplicate key/, [OWNER]);
+  await rejects(db, `insert into public.category_guesses (user_id, group_key, status) values ($1, 'x', 'maybe')`, /check constraint/, [OWNER]);
+  await rejects(db, `insert into public.category_guesses (user_id, group_key, confidence) values ($1, 'y', 'certain')`, /check constraint/, [OWNER]);
+  ok("category_guesses: one per merchant group, status/confidence constrained, migration re-runs safely");
+
   // Reimbursement trigger (runs the SELECT … FOR UPDATE path).
   const tx = async (desc: string, amount: string) =>
     (
@@ -137,6 +145,8 @@ async function main() {
   await db.query(`select set_config('request.jwt.claim.sub', $1, false)`, [INTRUDER]);
   const theirs = await db.query<{ n: number }>(`select count(*)::int n from public.transactions`);
   assert.equal(theirs.rows[0].n, 0, "another user sees nothing");
+  const theirGuesses = await db.query<{ n: number }>(`select count(*)::int n from public.category_guesses`);
+  assert.equal(theirGuesses.rows[0].n, 0, "another user can't see guesses");
   await rejects(db, `insert into public.categories (user_id, name) values ($1, 'Hack')`, /row-level security/, [OWNER]);
   const upd = await db.query(`update public.transactions set amount = 0 where user_id = $1`, [OWNER]);
   assert.equal(upd.affectedRows ?? 0, 0);

@@ -30,7 +30,7 @@ import { runSync, purgeMockData } from "@/lib/sync";
 import { executeTool } from "@/lib/chat/tools";
 import { runMockPlanner } from "@/lib/chat/mock";
 import { clip, cleanDescription } from "@/lib/text";
-import { categoriseGroups, guessCategories, inboxGroups, parseGuesses, quickCategories } from "@/lib/inbox";
+import { autoGuess, categoriseGroups, dismissGuess, guessCategories, inboxGroups, parseGuesses, quickCategories, storedGuesses, undoCategorise } from "@/lib/inbox";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "financeapp-features-"));
 let n = 0;
@@ -1041,12 +1041,69 @@ async function groupedInbox() {
   assert.equal(g.source, "offline");
   const cafe = (await inboxGroups(store)).find((x) => x.label.startsWith("Bambina"))!;
   assert.equal(g.guesses[cafe.key]?.category_id, id("Eating Out"));
-  assert.ok((await inboxGroups(store)).some((x) => x.key === cafe.key), "guessing doesn't save anything");
+  assert.ok((await inboxGroups(store)).some((x) => x.key === cafe.key), "guessing doesn't apply anything");
   assert.deepEqual(parseGuesses('{"guesses":[{"i":0,"category":"Travel","confidence":"high"},{"i":"x"},{"i":1,"category":"Bars","confidence":"sure"}]}'), [
     { i: 0, category: "Travel", confidence: "high" },
   ]);
   assert.deepEqual(parseGuesses("not json"), []);
-  ok("guesses pre-fill only (nothing saved); offline guess Bambina Cafe → Eating Out; malformed model output is ignored");
+  ok("guessing applies nothing (the group stays in the inbox); offline guess Bambina Cafe → Eating Out; malformed model output is ignored");
+}
+
+async function inboxUndoAndAutoGuess() {
+  section("Inbox: Undo, and guesses saved after each sync");
+  const store = await freshStore();
+  const cats = await store.select("categories");
+  const id = (n: string) => cats.find((c) => c.name === n)!.id;
+  await add(store, [
+    { desc: "FLIGHTNETWRK1133124432 ONLINE", amount: -420, date: addDays(today, -9) },
+    { desc: "FLIGHTNETWRK1134868134 ONLINE", amount: -380, date: addDays(today, -2) },
+    { desc: "FLIGHTNETWRK REFUND 99812345", amount: 120, date: addDays(today, -1), category: "Other", source: "akahu" },
+  ]);
+  const snapshot = async () => (await store.select("transactions")).map((t) => `${t.id}:${t.category_id}:${t.category_source}:${t.is_transfer}`).sort();
+  const before = await snapshot();
+  const rulesBefore = (await store.select("rules")).length;
+  const flights = (await inboxGroups(store)).find((g) => g.key === "debit:flightnetwrk")!;
+  const r = await categoriseGroups(store, [{ key: flights.key, category_id: id("Travel"), create_rule: true }]);
+  assert.equal(r.undo.txns.length, 3, "2 charges + the refund the rule re-filed");
+  assert.equal(r.undo.rules_created.length, 1);
+  const u = await undoCategorise(store, JSON.parse(JSON.stringify(r.undo)));
+  assert.equal(u.restored, 3);
+  assert.deepEqual(await snapshot(), before, "every transaction back exactly as it was (refund back to Other/akahu)");
+  assert.equal((await store.select("rules")).length, rulesBefore, "the new rule is removed");
+  assert.ok((await inboxGroups(store)).some((g) => g.key === flights.key), "the group is back in the inbox");
+  // A rule that already existed gets its old category back rather than being deleted.
+  await categoriseGroups(store, [{ key: flights.key, category_id: id("Travel"), create_rule: true }]);
+  const [again] = await add(store, [{ desc: "FLIGHTNETWRK1130000000 ONLINE", amount: -50, date: today, category: null }]);
+  await store.update("transactions", { eq: { id: again.id } }, { category_id: null, category_source: null });
+  const r2 = await categoriseGroups(store, [{ key: flights.key, category_id: id("Other"), create_rule: true }]);
+  assert.equal(r2.undo.rules_changed.length, 1);
+  await undoCategorise(store, r2.undo);
+  const rule = (await store.select("rules")).find((x) => x.pattern === "flightnetwrk")!;
+  assert.equal(rule.category_id, id("Travel"));
+  await assert.rejects(undoCategorise(store, { txns: "x" }), UserError);
+  ok("Undo puts back every transaction (incl. ones a new rule re-filed), deletes the new rule, restores an edited rule");
+
+  // Guesses are remembered, dismissed ones never come back, and sync fills them in.
+  const s2 = await freshStore();
+  await add(s2, [
+    { desc: "J SMITH CAFE MONEY", amount: -20, date: addDays(today, -2) }, // offline guess: Eating Out
+    { desc: "BAKEHOUSE TRANSFER", amount: -15, date: addDays(today, -2) },
+  ]);
+  const first = await guessCategories(s2);
+  assert.equal(first.guessed, 2);
+  const keys = Object.keys(await storedGuesses(s2));
+  assert.equal(keys.length, 2, "guesses are saved, not just returned");
+  await dismissGuess(s2, keys[0]);
+  assert.deepEqual(Object.keys(await storedGuesses(s2)), [keys[1]], "not this → gone");
+  await guessCategories(s2);
+  assert.ok(!(await storedGuesses(s2))[keys[0]], "a dismissed group isn't guessed again, even on Re-guess");
+  assert.equal(await autoGuess(s2), 0, "after a sync, already-guessed groups aren't re-sent");
+  await add(s2, [{ desc: "ESPRESSO WORKSHOP", amount: -6, date: today }]);
+  assert.equal(await autoGuess(s2), 1, "a new merchant is guessed");
+  const s3 = await freshStore();
+  await runSync(s3, new MockAkahuClient(), "test");
+  assert.ok((await s3.select("category_guesses")).length > 0, "sync pre-fills guesses for the inbox");
+  ok("guesses are saved and shown next visit; not this is remembered; each sync guesses only new merchants");
 }
 
 async function main() {
@@ -1068,6 +1125,7 @@ async function main() {
   await cardKeywords();
   await bankTransfers();
   await groupedInbox();
+  await inboxUndoAndAutoGuess();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);

@@ -25,6 +25,7 @@ const emptyDb = (): DB => ({
   subscription_prefs: [],
   weekly_caps: [],
   weekly_recaps: [],
+  category_guesses: [],
 });
 
 /** Tables whose rows have no `id` column (keyed by user_id). */
