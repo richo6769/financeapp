@@ -90,7 +90,7 @@ Settings → Bank sync.
 ### Categorisation precedence
 **Your manual choice › your rules › own-account transfer detection › merchant memory › Akahu enrichment hint › obvious words in a card charge › Uncategorised.**
 
-Card purchases (EFTPOS, credit card, or a debit charge showing the masked card number) with words like coffee/cafe/bakery go to Eating Out, pizza/burger/kebab to Takeaways, and pub/tavern/brewery to Bars. Transfers and payments to or from people are never guessed this way, because their references are often inaccurate. "Apply to all" rules drop per-transaction ids, so `FLIGHTNETWRK1133124432 ONLINE` makes the rule `flightnetwrk`.
+Card purchases (EFTPOS, credit card, or a debit charge showing the masked card number) with words like coffee/cafe/bakery go to Eating Out, pizza/burger/kebab to Takeaways, and pub/tavern/brewery to Bars. Transfers and payments to or from people are never guessed this way, because their references are often inaccurate. Bank transfer lines like `To: 06-0998-0835107-03 Debit Transfer 112621` / `From: … Credit Transfer …` go to Transfers, and own account numbers match whether the suffix is written -03 or -003. Each sync also re-checks older Uncategorised rows, so improvements apply to your history. "Apply to all" rules drop per-transaction ids, so `FLIGHTNETWRK1133124432 ONLINE` makes the rule `flightnetwrk`.
 - Transfers between your accounts and **Amex repayments from ANZ** (plus the
   matching "PAYMENT RECEIVED" credit on the card) are tagged **Transfers** and
   excluded from all spending totals.

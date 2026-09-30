@@ -185,7 +185,17 @@ export function descriptionHintCategory(categories: Category[], description: str
   return undefined;
 }
 
-const digits = (s: string) => s.replace(/\D/g, "");
+const NZ_ACCOUNT = /(\d{2})[- ]?(\d{4})[- ]?(\d{7})[- ]?(\d{2,3})(?!\d)/;
+const NZ_ACCOUNT_G = new RegExp(NZ_ACCOUNT.source, "g");
+
+/** Canonical NZ account number: bank+branch+account+3-digit suffix (-03 = -003). */
+export function accountKey(s: string): string | null {
+  const m = NZ_ACCOUNT.exec(s);
+  return m ? `${m[1]}${m[2]}${m[3]}${m[4].padStart(3, "0")}` : null;
+}
+
+/** "To: 06-0998-0835107-03 Debit Transfer 112621" / "From: … Credit Transfer …". */
+const BANK_TRANSFER = new RegExp(`^(to|from)\\b[:\\s]*${NZ_ACCOUNT.source}.*\\btransfer\\b`, "i");
 
 /**
  * Heuristics for money moving between my own accounts:
@@ -203,13 +213,15 @@ export function looksLikeTransfer(
   const isCard = acct?.type === "CREDITCARD";
   if (!isCard && t.amount < 0 && /american express|amex|credit card (re)?payment|card payment/.test(desc)) return true;
   if (isCard && t.amount > 0 && /payment received|thank you|payment - thank|direct debit payment|autopay/.test(desc)) return true;
+  // Bank's own-account transfer text: "To: 06-0998-0835107-03 Debit Transfer 112621".
+  if (BANK_TRANSFER.test(t.description)) return true;
   const own = accounts
     .filter((a) => a.id !== t.account_id && a.formatted_account)
-    .map((a) => digits(a.formatted_account!))
-    .filter((d) => d.length >= 8);
-  if (otherAccount && own.includes(digits(otherAccount))) return true;
-  const descDigits = digits(t.description);
-  if (descDigits.length >= 8 && own.some((d) => descDigits.includes(d))) return true;
+    .map((a) => accountKey(a.formatted_account!))
+    .filter((d): d is string => !!d);
+  if (otherAccount && own.includes(accountKey(otherAccount) ?? "")) return true;
+  const inDesc = [...t.description.matchAll(NZ_ACCOUNT_G)].map((m) => accountKey(m[0]));
+  if (inDesc.some((k) => k && own.includes(k))) return true;
   return false;
 }
 

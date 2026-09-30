@@ -16,7 +16,7 @@ import { MockAkahuClient } from "@/lib/akahu/mock";
 import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
-import { categorise, findRule, isCardCharge, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
+import { accountKey, categorise, findRule, isCardCharge, looksLikeTransfer, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
 import { budgetStatus, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { dashboard } from "@/lib/dashboard";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
@@ -1010,6 +1010,32 @@ async function cardKeywords() {
   ok('"Smz*Coffee C Card number: 4835 …" → Eating Out; "coffee" in a transfer/payment reference from a person → left alone');
 }
 
+async function bankTransfers() {
+  section("Bank transfer text (To:/From: account … Transfer) → Transfers");
+  const xfer = (description: string, amount = -50, accounts: never[] = []) =>
+    looksLikeTransfer({ description, amount, account_id: "sav", type: "TRANSFER" }, accounts);
+  assert.ok(xfer("To: 06-0998-0835107-03 Debit Transfer 112621"));
+  assert.ok(xfer("From: 06-0998-0835107-03 Credit Transfer 112410", 50));
+  assert.ok(xfer("From: 06-0998-0835107-06 Credit Transfer 093440", 50));
+  assert.ok(!xfer("To: 06-0998-0835107-03 Rent"), "needs the word transfer");
+  assert.ok(!xfer("SAM WILSON transfer"), "needs To:/From: and an account number");
+  // Own account written with a 2- or 3-digit suffix still matches.
+  assert.equal(accountKey("06-0998-0835107-03"), accountKey("06-0998-0835107-003"));
+  const mine = [{ id: "other", formatted_account: "06-0998-0835107-003", type: "CHECKING" }] as never[];
+  assert.ok(xfer("ANZ INTERNET BANKING 06-0998-0835107-03", -20, mine));
+
+  // Older Uncategorised rows get picked up on the next sync.
+  const store = await freshStore();
+  const [old] = await add(store, [{ desc: "To: 06-0998-0835107-03 Debit Transfer 112621", amount: -500, date: addDays(today, -400) }]);
+  await store.update("transactions", { eq: { id: old.id } }, { type: "TRANSFER" });
+  await runSync(store, new MockAkahuClient(), "test");
+  const [after] = await store.select("transactions", { eq: { id: old.id } });
+  const cats = await store.select("categories");
+  assert.equal(cats.find((c) => c.id === after.category_id)?.name, "Transfers");
+  assert.equal(after.is_transfer, true);
+  ok('"To:/From: 06-0998-0835107-03 … Transfer" → Transfers (-03 = -003), and older Uncategorised rows are fixed on the next sync');
+}
+
 async function main() {
   await money();
   await dst();
@@ -1028,6 +1054,7 @@ async function main() {
   await nettedOff();
   await uniqueIds();
   await cardKeywords();
+  await bankTransfers();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);
