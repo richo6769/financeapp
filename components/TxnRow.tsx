@@ -122,20 +122,33 @@ export default function TxnRow({
               <button className="underline" onClick={() => unlink(l.link_id)}>Unlink</button>
             </li>
           ))}
-          {t.unallocated != null && t.unallocated > 0 && <li>{money(t.unallocated)} unallocated</li>}
         </ul>
       )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <CategorySelect
-          cats={cats}
-          value={cat}
-          onChange={(id) => {
-            setCat(id);
-            save(id, false);
-          }}
-          className="max-w-[60%]"
-          ariaLabel={`Category for ${who}`}
-        />
+        {t.netted_off ? (
+          // Fully allocated: the money belongs to the expense(s) it paid back.
+          <span className="chip bg-accent-soft text-ink" title="Fully netted off against the expense below — no category needed">
+            ✓ {t.netted_categories.length ? `${t.netted_categories.join(", ")} · netted off` : "Netted off"}
+          </span>
+        ) : (
+          <>
+            <CategorySelect
+              cats={cats}
+              value={cat}
+              onChange={(id) => {
+                setCat(id);
+                save(id, false);
+              }}
+              className="max-w-[60%]"
+              ariaLabel={`Category for ${who}${t.unallocated ? " (unallocated part)" : ""}`}
+            />
+            {t.unallocated != null && t.unallocated > 0 && (
+              <span className="chip" title="Only this part needs a category; the rest is netted off">
+                {money(t.unallocated)} unallocated
+              </span>
+            )}
+          </>
+        )}
         {t.is_transfer && <span className="chip">{t.category_kind === "savings" ? "savings · not spending" : "transfer · excluded"}</span>}
         {t.removed_at && <span className="chip" title="The bank removed this after it settled; it's excluded from totals">removed by bank</span>}
         {t.trip && <a href={`/trips/${t.trip.id}`} className="chip">✈ {t.trip.name}</a>}

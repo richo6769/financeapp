@@ -8,6 +8,7 @@ type Candidate = {
   id: string;
   local_date: string;
   description: string;
+  label: string;
   merchant_name: string | null;
   amount: number;
   allocated: number;
@@ -93,7 +94,7 @@ export default function NetOffPanel({ expense, onLinked, onClose }: { expense: T
           return (
             <li key={c.id} className="flex items-center gap-2 py-2 text-xs">
               <div className="min-w-0 flex-1">
-                <div className="truncate font-medium">{c.merchant_name ?? c.description}</div>
+                <div className="truncate font-medium" title={c.description}>{c.label}</div>
                 <div className="text-muted">
                   {shortDate(c.local_date)} · <span className="text-good">+{money(c.amount)}</span>
                   {c.allocated > 0 && <> · {money(c.unallocated)} unallocated</>}

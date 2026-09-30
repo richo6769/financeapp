@@ -6,6 +6,7 @@ import { budgetStatus, spendCentsOf, spendingByCategory, type PeriodMode } from 
 import { pendingSuggestionCount } from "@/lib/suggest";
 import { weeklyCapStatus } from "@/lib/caps";
 import { balanceCents } from "@/lib/iou";
+import { loadLinkTotals, needsCategory } from "@/lib/reimburse";
 
 export async function dashboard(store: Store, mode: PeriodMode = "month") {
   const today = todayLocal();
@@ -22,6 +23,7 @@ export async function dashboard(store: Store, mode: PeriodMode = "month") {
     store.select("weekly_recaps", undefined, { order: { column: "week_start", ascending: false }, limit: 1 }),
     store.select("ious", { eq: { status: "open" } }),
   ]);
+  const linkTotals = await loadLinkTotals(store);
   const months: string[] = [];
   for (let i = 5; i >= 0; i--) months.push(monthKey(addMonths(monthStart(today), -i)));
   const trend = months.map((m) => ({
@@ -49,7 +51,7 @@ export async function dashboard(store: Store, mode: PeriodMode = "month") {
     accounts,
     pending: pending.sort((a, b) => b.date.localeCompare(a.date)),
     last_sync: lastSync[0] ?? null,
-    uncategorised_count: uncategorised.filter((t) => !t.removed_at).length,
+    uncategorised_count: uncategorised.filter((t) => needsCategory(t, linkTotals)).length,
     suggestion_count: suggestions,
     weekly,
     latest_recap: recap[0] ?? null,

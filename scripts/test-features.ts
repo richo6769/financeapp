@@ -17,8 +17,9 @@ import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
 import { findRule, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
-import { budgetStatus, createRule, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
-import { linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
+import { budgetStatus, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
+import { dashboard } from "@/lib/dashboard";
+import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
 import { cancelIou, createIou, listIous, owedByPerson } from "@/lib/iou";
 import { acceptSuggestion, dismissSuggestion, generateSuggestions, pendingSuggestions } from "@/lib/suggest";
 import { createTrip, loadMembership, setTripMembership, tripSummary, updateTrip } from "@/lib/trips";
@@ -29,7 +30,7 @@ import { computeRecapFacts, generateRecap, inventedNumbers, lastWeekStart, templ
 import { runSync, purgeMockData } from "@/lib/sync";
 import { executeTool } from "@/lib/chat/tools";
 import { runMockPlanner } from "@/lib/chat/mock";
-import { clip } from "@/lib/text";
+import { clip, cleanDescription } from "@/lib/text";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "financeapp-features-"));
 let n = 0;
@@ -879,6 +880,93 @@ async function savings() {
   ok("existing data: Savings category + rules are added once, matching rows move over, manual choices are kept");
 }
 
+async function nettedOff() {
+  section("Netted-off incoming payments need no category");
+  const store = await freshStore();
+  const [jacket, dinner, usd, jack, tom] = await add(store, [
+    { desc: "HALLENSTEIN BROS", amount: -150, date: addDays(today, -3), category: "Clothes/Shopping" },
+    { desc: "DINNER AT SOUL", amount: -100, date: addDays(today, -3), category: "Eating Out" },
+    { desc: "EVERYDAY/KAK 25.00 USD CONVERTED AT 1.6852 INCL FEE", amount: 150, date: addDays(today, -1) },
+    { desc: "JACK HARRIS", amount: 80, date: addDays(today, -1) },
+    { desc: "TOM BROWN", amount: 40, date: addDays(today, -1), category: "Other" }, // already had a category
+  ]);
+  const inbox = async () => (await findTransactions(store, { category: "uncategorised" })).map((t) => t.id);
+  const view = async (id: string) => (await describeNet(store, await store.select("transactions", { eq: { id } })))[0];
+  assert.ok((await inbox()).includes(usd.id) && (await inbox()).includes(jack.id));
+  const before = (await dashboard(store)).uncategorised_count;
+
+  // Fully linked → no category needed, out of the inbox and the count.
+  await linkReimbursement(store, { expense_id: jacket.id, income_id: usd.id });
+  let v = await view(usd.id);
+  assert.equal(v.netted_off, true);
+  assert.deepEqual(v.netted_categories, ["Clothes/Shopping"]);
+  assert.equal(v.unallocated, 0);
+  assert.equal(v.category_id, null, "the payment itself is untouched");
+  assert.ok(!(await inbox()).includes(usd.id));
+  assert.equal((await dashboard(store)).uncategorised_count, before - 1);
+  assert.equal((await view(jacket.id)).reimbursed_by[0].other_name, "Everyday/Kak");
+  ok('fully linked: "Clothes/Shopping · netted off", out of the inbox and the uncategorised count; label "Everyday/Kak"');
+
+  await setTransactionCategory(store, jacket.id, await catId(store, "Travel"), false);
+  assert.deepEqual((await view(usd.id)).netted_categories, ["Travel"]);
+  ok("recategorising the expense updates the payment's badge (Travel · netted off)");
+
+  // Partial → only the remainder needs a category.
+  await linkReimbursement(store, { expense_id: dinner.id, income_id: jack.id, amount: 50 });
+  v = await view(jack.id);
+  assert.equal(v.netted_off, false);
+  assert.equal(v.unallocated, 30);
+  assert.ok((await inbox()).includes(jack.id), "still needs a category for the $30");
+  ok("partially linked: stays in the inbox with $30.00 unallocated");
+
+  // A payment that already had a category keeps it through link/unlink.
+  const tomLink = await linkReimbursement(store, { expense_id: dinner.id, income_id: tom.id });
+  assert.equal((await view(tom.id)).netted_off, true);
+  await unlinkReimbursement(store, tomLink.link.id);
+  const tomAfter = await view(tom.id);
+  assert.equal(tomAfter.netted_off, false);
+  assert.equal(tomAfter.category_id, await catId(store, "Other"));
+  assert.ok(!(await inbox()).includes(tom.id));
+  // An uncategorised one goes back to Uncategorised.
+  await unlinkReimbursement(store, (await store.select("reimbursement_links", { eq: { income_id: usd.id } }))[0].id);
+  assert.ok((await inbox()).includes(usd.id));
+  assert.equal((await view(usd.id)).netted_off, false);
+  ok("unlinking: an uncategorised payment returns to Uncategorised; one with a category keeps it");
+
+  // Same logic via Accept on a suggestion …
+  const s2 = await freshStore();
+  const [bar] = await add(s2, [{ desc: "SOUL BAR & BISTRO", amount: -84, date: addDays(today, -2), category: "Bars" }]);
+  const [pay] = await add(s2, [{ desc: "JACK HARRIS DINNER", amount: 42, date: addDays(today, -1) }]);
+  await generateSuggestions(s2);
+  const sug = (await pendingSuggestions(s2)).find((x) => x.income_id === pay.id && x.expense_id === bar.id)!;
+  assert.ok((await findTransactions(s2, { category: "uncategorised" })).some((t) => t.id === pay.id));
+  await acceptSuggestion(s2, sug.id);
+  assert.ok(!(await findTransactions(s2, { category: "uncategorised" })).some((t) => t.id === pay.id));
+  assert.deepEqual((await describeNet(s2, [pay]))[0].netted_categories, ["Bars"]);
+  // … and via chat.
+  const [snus] = await add(s2, [{ desc: "SNUS DIRECT", amount: -365, date: addDays(today, -4), category: "Other" }]);
+  const [sam] = await add(s2, [{ desc: "SAM WILSON", amount: 100, date: addDays(today, -1) }]);
+  const r = await runMockPlanner({ store: s2, priorTokens: new Set() }, [], "The $100 from Sam was for Snus Direct");
+  assert.match(r.reply, /Netted off \$100\.00/);
+  assert.ok(!(await findTransactions(s2, { category: "uncategorised" })).some((t) => t.id === sam.id));
+  assert.equal((await describeNet(s2, [sam]))[0].netted_off, true);
+  await setTransactionCategory(s2, snus.id, null, false);
+  assert.deepEqual((await describeNet(s2, [sam]))[0].netted_categories, [], 'uncategorised expense → plain "Netted off"');
+  ok("Accept on a suggestion and chat links behave the same (payment leaves Uncategorised, shows the expense category)");
+
+  const cases: [string, string][] = [
+    ["EVERYDAY/KAK 25.00 USD CONVERTED AT 1.6852 INCL FEE", "Everyday/Kak"],
+    ["EVERYDAY/KAK USD 12.50 @ 1.7011", "Everyday/Kak"],
+    ["AMAZON MKTPLACE 43.99 USD INCL CONVERSION FEE 1.21", "Amazon Mktplace"],
+    ["UBER *TRIP 4835-****-****-1234", "Uber *Trip"],
+    ["POLI PAYMENT TRADEME 123456789", "Poli Payment Trademe"],
+    ["SAM WILSON SNUS", "Sam Wilson Snus"],
+  ];
+  for (const [raw, want] of cases) assert.equal(cleanDescription(raw), want, raw);
+  assert.ok(cleanDescription("A".repeat(80)).length <= 40);
+  ok(`long bank text cleaned for labels (${cases.length} cases, e.g. USD conversion text → "Everyday/Kak")`);
+}
+
 async function main() {
   await money();
   await dst();
@@ -894,6 +982,7 @@ async function main() {
   await syncSafety();
   await backfill();
   await savings();
+  await nettedOff();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);

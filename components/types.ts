@@ -18,11 +18,13 @@ export type Txn = {
   reimbursed_by: LinkView[];
   linked_to: LinkView[];
   unallocated: number | null;
+  netted_off: boolean;
+  netted_categories: string[];
   foreign_amount: number | null;
   foreign_currency: string | null;
   removed_at: string | null;
   trip: { id: string; name: string } | null;
   ious: { id: string; person_name: string; amount: number; balance: number; status: string }[];
 };
-export type LinkView = { link_id: string; other_id: string; other_name: string; other_date: string; amount: number };
+export type LinkView = { link_id: string; other_id: string; other_name: string; other_date: string; other_category: string; amount: number };
 export type Account = { id: string; name: string; institution: string };

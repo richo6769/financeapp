@@ -350,9 +350,9 @@ async function netOffTests() {
   assert.equal((await month()).spent("Other"), 265);
   const [view] = await describeNet(store2, await store2.select("transactions", { eq: { id: id("SNUS DIRECT") } }));
   assert.equal(view.net_amount, -265);
-  assert.equal(view.reimbursed_by[0].other_name, "SAM WILSON");
+  assert.equal(view.reimbursed_by[0].other_name, "Sam Wilson"); // cleaned label
   const [samView] = await describeNet(store2, await store2.select("transactions", { eq: { id: id("SAM WILSON") } }));
-  assert.equal(samView.linked_to[0].other_name, "SNUS DIRECT");
+  assert.equal(samView.linked_to[0].other_name, "Snus Direct");
   assert.equal(samView.unallocated, 0);
   ok("partial: Snus Direct $365 − $100 from Sam = $265 net in Other; Sam shows 'linked to SNUS DIRECT'");
 
