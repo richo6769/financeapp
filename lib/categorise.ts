@@ -152,7 +152,50 @@ export function akahuHintCategory(
   return undefined;
 }
 
-const digits = (s: string) => s.replace(/\D/g, "");
+/**
+ * Obvious words in a card charge's description ("SMZ*COFFEE C"). Only used
+ * for card purchases: a person's transfer reference ("coffee" from a mate)
+ * says little about what the money was for.
+ */
+const DESCRIPTION_HINTS: [RegExp, string][] = [
+  [/\b(pub|tavern|brewery|brewing co)\b/i, "Bars"],
+  [/\b(pizza|burgers?|kebabs?|fish ?n'? ?chips|takeaways?)\b/i, "Takeaways"],
+  [/\b(coffee|caf[eé]s?|espresso|roasters?|bakery|bakehouse|restaurant|bistro|eatery|brunch)\b/i, "Eating Out"],
+];
+
+/** Non-card movements: never guessed from their description. */
+const NON_CARD_TYPES = /transfer|payment|standing order|direct (debit|credit)|bill|kiwisaver|loan|interest|tax|fee|atm/i;
+
+/** A purchase made with a card (EFTPOS, credit/debit card), not a transfer or bill payment. */
+export function isCardCharge(t: Pick<Transaction, "amount" | "account_id" | "type" | "description">, accounts: Account[]): boolean {
+  if (!(t.amount < 0)) return false;
+  if (t.type && NON_CARD_TYPES.test(t.type)) return false;
+  if (t.type && /eftpos|credit card|debit card|card|pos/i.test(t.type)) return true;
+  if (accounts.find((a) => a.id === t.account_id)?.type === "CREDITCARD") return true;
+  // Visa/Mastercard debit charges often carry the masked card number.
+  return /card number|\d{4}[ -]?\*{4}/i.test(t.description);
+}
+
+export function descriptionHintCategory(categories: Category[], description: string): Category | undefined {
+  for (const [re, name] of DESCRIPTION_HINTS) {
+    if (!re.test(description)) continue;
+    const cat = categories.find((c) => c.name.toLowerCase() === name.toLowerCase() && !c.parent_id);
+    if (cat) return cat;
+  }
+  return undefined;
+}
+
+const NZ_ACCOUNT = /(\d{2})[- ]?(\d{4})[- ]?(\d{7})[- ]?(\d{2,3})(?!\d)/;
+const NZ_ACCOUNT_G = new RegExp(NZ_ACCOUNT.source, "g");
+
+/** Canonical NZ account number: bank+branch+account+3-digit suffix (-03 = -003). */
+export function accountKey(s: string): string | null {
+  const m = NZ_ACCOUNT.exec(s);
+  return m ? `${m[1]}${m[2]}${m[3]}${m[4].padStart(3, "0")}` : null;
+}
+
+/** "To: 06-0998-0835107-03 Debit Transfer 112621" / "From: … Credit Transfer …". */
+const BANK_TRANSFER = new RegExp(`^(to|from)\\b[:\\s]*${NZ_ACCOUNT.source}.*\\btransfer\\b`, "i");
 
 /**
  * Heuristics for money moving between my own accounts:
@@ -170,13 +213,15 @@ export function looksLikeTransfer(
   const isCard = acct?.type === "CREDITCARD";
   if (!isCard && t.amount < 0 && /american express|amex|credit card (re)?payment|card payment/.test(desc)) return true;
   if (isCard && t.amount > 0 && /payment received|thank you|payment - thank|direct debit payment|autopay/.test(desc)) return true;
+  // Bank's own-account transfer text: "To: 06-0998-0835107-03 Debit Transfer 112621".
+  if (BANK_TRANSFER.test(t.description)) return true;
   const own = accounts
     .filter((a) => a.id !== t.account_id && a.formatted_account)
-    .map((a) => digits(a.formatted_account!))
-    .filter((d) => d.length >= 8);
-  if (otherAccount && own.includes(digits(otherAccount))) return true;
-  const descDigits = digits(t.description);
-  if (descDigits.length >= 8 && own.some((d) => descDigits.includes(d))) return true;
+    .map((a) => accountKey(a.formatted_account!))
+    .filter((d): d is string => !!d);
+  if (otherAccount && own.includes(accountKey(otherAccount) ?? "")) return true;
+  const inDesc = [...t.description.matchAll(NZ_ACCOUNT_G)].map((m) => accountKey(m[0]));
+  if (inDesc.some((k) => k && own.includes(k))) return true;
   return false;
 }
 
@@ -236,7 +281,8 @@ export interface CategoriseInput extends Matchable {
 
 /**
  * Decide a category. Precedence (my choices always beat Akahu's):
- *  rules > own-account transfer detection > merchant memory > Akahu hint.
+ *  rules > own-account transfer detection > merchant memory > Akahu hint >
+ *  obvious words in a card charge (coffee/cafe → Eating Out).
  * (Manually categorised rows are never passed through here.)
  */
 export function categorise(
@@ -258,6 +304,8 @@ export function categorise(
   }
   const hint = akahuHintCategory(ctx.categories, t.akahu_category, t.akahu_group);
   if (hint) return { category_id: hint.id, category_source: "akahu", is_transfer: isInternalKind(hint.kind) };
+  const kw = isCardCharge(t, ctx.accounts) ? descriptionHintCategory(ctx.categories, t.description) : undefined;
+  if (kw) return { category_id: kw.id, category_source: "akahu", is_transfer: isInternalKind(kw.kind) };
   if (t.amount > 0 && /\b(salary|wages?|payroll)\b/i.test(t.description)) {
     const income = ctx.categories.find((c) => c.kind === "income" && !c.parent_id);
     if (income) return { category_id: income.id, category_source: "akahu", is_transfer: false };
@@ -275,14 +323,18 @@ export function buildMerchantMemory(txns: Transaction[]): Map<string, string> {
 }
 
 /** A short, human-friendly pattern for "apply to all from this merchant". */
+const PATTERN_NOISE = ["sq", "pos", "eftpos", "ltd", "limited", "online", "www", "ref"];
+
 export function merchantPattern(t: Pick<Transaction, "merchant_name" | "description">): {
   pattern: string;
   field: "merchant" | "description";
 } {
   if (t.merchant_name) return { pattern: t.merchant_name, field: "merchant" };
-  // Drop trailing branch/location noise: keep the first 2-3 meaningful words.
+  // Drop per-transaction ids ("FLIGHTNETWRK1133124432" → "flightnetwrk") and
+  // trailing branch/location noise: keep the first 2-3 meaningful words.
   const words = normalise(t.description)
     .split(" ")
-    .filter((w) => w.length > 1 && !/^\d+$/.test(w) && !["sq", "pos", "eftpos", "ltd", "limited"].includes(w));
+    .map((w) => w.replace(/\d{3,}/g, ""))
+    .filter((w) => w.length > 1 && !/^\d+$/.test(w) && !PATTERN_NOISE.includes(w));
   return { pattern: words.slice(0, words.length > 3 ? 2 : 3).join(" ") || t.description, field: "description" };
 }

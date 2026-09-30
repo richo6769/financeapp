@@ -16,7 +16,7 @@ import { MockAkahuClient } from "@/lib/akahu/mock";
 import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
-import { findRule, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
+import { accountKey, categorise, findRule, isCardCharge, looksLikeTransfer, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
 import { budgetStatus, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { dashboard } from "@/lib/dashboard";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
@@ -967,6 +967,75 @@ async function nettedOff() {
   ok(`long bank text cleaned for labels (${cases.length} cases, e.g. USD conversion text → "Everyday/Kak")`);
 }
 
+async function uniqueIds() {
+  section("Auto rules ignore per-transaction ids");
+  const pat = (d: string) => merchantPattern({ merchant_name: null, description: d }).pattern;
+  assert.equal(pat("FLIGHTNETWRK1133124432 ONLINE"), "flightnetwrk");
+  assert.equal(pat("FLIGHTNETWRK1134868134 ONLINE"), "flightnetwrk");
+  assert.equal(pat("2DEGREES MOBILE"), "2degrees mobile", "short numbers in a name are kept");
+  const store = await freshStore();
+  const [a, b] = await add(store, [
+    { desc: "FLIGHTNETWRK1133124432 ONLINE", amount: -420, date: addDays(today, -5) },
+    { desc: "FLIGHTNETWRK1134868134 ONLINE", amount: -380, date: addDays(today, -5) },
+  ]);
+  const cats = await store.select("categories");
+  const travel = cats.find((c) => c.name === "Travel")!;
+  const res = await setTransactionCategory(store, a.id, travel.id, true);
+  assert.equal(res.rule, '"flightnetwrk" → Travel');
+  const [b2] = await store.select("transactions", { eq: { id: b.id } });
+  assert.equal(b2.category_id, travel.id, "the other booking (different id) is categorised too");
+  ok('"FLIGHTNETWRK1133124432 ONLINE" → rule "flightnetwrk", which also catches FLIGHTNETWRK1134868134');
+}
+
+async function cardKeywords() {
+  section("Card charges with obvious words (coffee) are categorised");
+  const store = await freshStore();
+  const categories = await store.select("categories");
+  const accounts = [{ id: "daily", type: "CHECKING" }, { id: "amex", type: "CREDITCARD" }] as never[];
+  const ctx = { categories, rules: await store.select("rules"), accounts, merchantMemory: new Map<string, string>() };
+  const name = (id: string | null) => categories.find((c) => c.id === id)?.name ?? "Uncategorised";
+  const guess = (description: string, type: string | null, amount = -4, account_id = "daily") =>
+    name(categorise({ description, merchant_name: null, amount, account_id, type, akahu_category: null }, ctx).category_id);
+  assert.equal(guess("Smz*Coffee C Card number: 4835 **** **** 0680", "DEBIT"), "Eating Out", "debit card charge with masked card number");
+  assert.equal(guess("SMZ*COFFEE C", "EFTPOS"), "Eating Out");
+  assert.equal(guess("BAMBINA CAFE", null, -12, "amex"), "Eating Out", "on the credit card account");
+  assert.equal(guess("DOUGHBOYS PIZZA", "CREDIT CARD"), "Takeaways");
+  assert.equal(guess("FORTUNE TAVERN", "EFTPOS"), "Bars");
+  // People's references don't count.
+  assert.equal(guess("J SMITH coffee", "TRANSFER"), "Uncategorised", "transfer to a person");
+  assert.equal(guess("SAM coffee money", "DIRECT CREDIT", 5), "Uncategorised", "money in from a person");
+  assert.equal(guess("MIA coffee", "PAYMENT"), "Uncategorised", "bill/online payment to a person");
+  assert.equal(guess("MIA coffee", "DEBIT"), "Uncategorised", "debit without card evidence");
+  assert.ok(!isCardCharge({ amount: 4, account_id: "amex", type: "CREDIT CARD", description: "COFFEE REFUND" }, accounts), "refunds aren't charges");
+  ok('"Smz*Coffee C Card number: 4835 …" → Eating Out; "coffee" in a transfer/payment reference from a person → left alone');
+}
+
+async function bankTransfers() {
+  section("Bank transfer text (To:/From: account … Transfer) → Transfers");
+  const xfer = (description: string, amount = -50, accounts: never[] = []) =>
+    looksLikeTransfer({ description, amount, account_id: "sav", type: "TRANSFER" }, accounts);
+  assert.ok(xfer("To: 06-0998-0835107-03 Debit Transfer 112621"));
+  assert.ok(xfer("From: 06-0998-0835107-03 Credit Transfer 112410", 50));
+  assert.ok(xfer("From: 06-0998-0835107-06 Credit Transfer 093440", 50));
+  assert.ok(!xfer("To: 06-0998-0835107-03 Rent"), "needs the word transfer");
+  assert.ok(!xfer("SAM WILSON transfer"), "needs To:/From: and an account number");
+  // Own account written with a 2- or 3-digit suffix still matches.
+  assert.equal(accountKey("06-0998-0835107-03"), accountKey("06-0998-0835107-003"));
+  const mine = [{ id: "other", formatted_account: "06-0998-0835107-003", type: "CHECKING" }] as never[];
+  assert.ok(xfer("ANZ INTERNET BANKING 06-0998-0835107-03", -20, mine));
+
+  // Older Uncategorised rows get picked up on the next sync.
+  const store = await freshStore();
+  const [old] = await add(store, [{ desc: "To: 06-0998-0835107-03 Debit Transfer 112621", amount: -500, date: addDays(today, -400) }]);
+  await store.update("transactions", { eq: { id: old.id } }, { type: "TRANSFER" });
+  await runSync(store, new MockAkahuClient(), "test");
+  const [after] = await store.select("transactions", { eq: { id: old.id } });
+  const cats = await store.select("categories");
+  assert.equal(cats.find((c) => c.id === after.category_id)?.name, "Transfers");
+  assert.equal(after.is_transfer, true);
+  ok('"To:/From: 06-0998-0835107-03 … Transfer" → Transfers (-03 = -003), and older Uncategorised rows are fixed on the next sync');
+}
+
 async function main() {
   await money();
   await dst();
@@ -983,6 +1052,9 @@ async function main() {
   await backfill();
   await savings();
   await nettedOff();
+  await uniqueIds();
+  await cardKeywords();
+  await bankTransfers();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);

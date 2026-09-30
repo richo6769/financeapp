@@ -215,6 +215,24 @@ export async function runSync(
       );
     }
 
+    // Older rows still Uncategorised (outside this fetch): give them the
+    // current checks too, e.g. after detection improves.
+    const fetched = new Set(saved.map((t) => t.id));
+    const stale = (await store.select("transactions", { eq: { category_id: null } })).filter(
+      (t) => !fetched.has(t.id) && !t.removed_at && t.category_source !== "manual",
+    );
+    const byDecision = new Map<string, { ids: string[]; patch: Partial<Transaction> }>();
+    for (const t of stale) {
+      const d = categorise(t, ctx);
+      if (!d.category_id) continue;
+      const key = `${d.category_id}|${d.category_source}`;
+      if (!byDecision.has(key)) byDecision.set(key, { ids: [], patch: d });
+      byDecision.get(key)!.ids.push(t.id);
+    }
+    for (const { ids: batch, patch } of byDecision.values()) {
+      await store.update("transactions", { in: { id: batch } }, patch);
+    }
+
     // Pending: replace wholesale (settled versions arrive with an _id). The
     // new set was fetched above, so a failure can't leave us with none.
     await store.remove("pending_transactions", {});

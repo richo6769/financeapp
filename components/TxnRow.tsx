@@ -4,6 +4,7 @@ import { useState } from "react";
 import { api, money, shortDate } from "@/lib/client";
 import CategorySelect from "./CategorySelect";
 import NetOffPanel from "./NetOffPanel";
+import { merchantPattern } from "@/lib/categorise";
 import type { Account, Cat, Txn } from "./types";
 
 /**
@@ -198,7 +199,7 @@ export default function TxnRow({
       )}
       {offer && (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-accent-soft p-2 text-xs">
-          <span>Apply to all from “{who}” and create a rule?</span>
+          <span>Apply to all matching “{merchantPattern(t).pattern}” and create a rule?</span>
           <button className="btn-primary px-2 py-1 text-xs" disabled={busy} onClick={() => save(offer, true)}>
             Apply to all
           </button>
