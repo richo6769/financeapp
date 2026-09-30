@@ -275,14 +275,18 @@ export function buildMerchantMemory(txns: Transaction[]): Map<string, string> {
 }
 
 /** A short, human-friendly pattern for "apply to all from this merchant". */
+const PATTERN_NOISE = ["sq", "pos", "eftpos", "ltd", "limited", "online", "www", "ref"];
+
 export function merchantPattern(t: Pick<Transaction, "merchant_name" | "description">): {
   pattern: string;
   field: "merchant" | "description";
 } {
   if (t.merchant_name) return { pattern: t.merchant_name, field: "merchant" };
-  // Drop trailing branch/location noise: keep the first 2-3 meaningful words.
+  // Drop per-transaction ids ("FLIGHTNETWRK1133124432" → "flightnetwrk") and
+  // trailing branch/location noise: keep the first 2-3 meaningful words.
   const words = normalise(t.description)
     .split(" ")
-    .filter((w) => w.length > 1 && !/^\d+$/.test(w) && !["sq", "pos", "eftpos", "ltd", "limited"].includes(w));
+    .map((w) => w.replace(/\d{3,}/g, ""))
+    .filter((w) => w.length > 1 && !/^\d+$/.test(w) && !PATTERN_NOISE.includes(w));
   return { pattern: words.slice(0, words.length > 3 ? 2 : 3).join(" ") || t.description, field: "description" };
 }

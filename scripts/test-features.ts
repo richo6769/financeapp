@@ -16,7 +16,7 @@ import { MockAkahuClient } from "@/lib/akahu/mock";
 import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
-import { findRule, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
+import { findRule, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
 import { budgetStatus, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { dashboard } from "@/lib/dashboard";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
@@ -967,6 +967,26 @@ async function nettedOff() {
   ok(`long bank text cleaned for labels (${cases.length} cases, e.g. USD conversion text → "Everyday/Kak")`);
 }
 
+async function uniqueIds() {
+  section("Auto rules ignore per-transaction ids");
+  const pat = (d: string) => merchantPattern({ merchant_name: null, description: d }).pattern;
+  assert.equal(pat("FLIGHTNETWRK1133124432 ONLINE"), "flightnetwrk");
+  assert.equal(pat("FLIGHTNETWRK1134868134 ONLINE"), "flightnetwrk");
+  assert.equal(pat("2DEGREES MOBILE"), "2degrees mobile", "short numbers in a name are kept");
+  const store = await freshStore();
+  const [a, b] = await add(store, [
+    { desc: "FLIGHTNETWRK1133124432 ONLINE", amount: -420, date: addDays(today, -5) },
+    { desc: "FLIGHTNETWRK1134868134 ONLINE", amount: -380, date: addDays(today, -5) },
+  ]);
+  const cats = await store.select("categories");
+  const travel = cats.find((c) => c.name === "Travel")!;
+  const res = await setTransactionCategory(store, a.id, travel.id, true);
+  assert.equal(res.rule, '"flightnetwrk" → Travel');
+  const [b2] = await store.select("transactions", { eq: { id: b.id } });
+  assert.equal(b2.category_id, travel.id, "the other booking (different id) is categorised too");
+  ok('"FLIGHTNETWRK1133124432 ONLINE" → rule "flightnetwrk", which also catches FLIGHTNETWRK1134868134');
+}
+
 async function main() {
   await money();
   await dst();
@@ -983,6 +1003,7 @@ async function main() {
   await backfill();
   await savings();
   await nettedOff();
+  await uniqueIds();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);
