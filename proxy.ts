@@ -23,9 +23,12 @@ export async function proxy(request: NextRequest) {
       },
     },
   });
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // getClaims verifies the session JWT locally (Supabase signing keys, cached)
+  // and refreshes it when needed, instead of a round trip to the Auth server on
+  // every request. With legacy JWT secrets it falls back to asking the server.
+  const { data } = await supabase.auth.getClaims();
+  const claims = data?.claims;
+  const user = claims?.sub ? { id: claims.sub, email: typeof claims.email === "string" ? claims.email : undefined } : null;
 
   const path = request.nextUrl.pathname;
   // Single-user app: a session for any other email is treated as signed out.

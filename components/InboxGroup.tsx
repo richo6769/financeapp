@@ -41,6 +41,7 @@ export default function InboxGroup({
   rule,
   onRuleChange,
   onSaved,
+  onPending,
 }: {
   g: Group;
   cats: Cat[];
@@ -51,6 +52,8 @@ export default function InboxGroup({
   rule: boolean;
   onRuleChange: (v: boolean) => void;
   onSaved: (msg: string, undo?: Undo) => void;
+  /** Hide the group straight away while saving; `false` brings it back if the save fails. */
+  onPending?: (hidden: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
@@ -61,6 +64,7 @@ export default function InboxGroup({
 
   async function save(categoryId: string) {
     setBusy(true);
+    onPending?.(true);
     try {
       const r = await api<{ updated: number; rules: string[]; undo: Undo }>("/api/inbox", {
         method: "POST",
@@ -68,6 +72,7 @@ export default function InboxGroup({
       });
       onSaved(`${g.label} → ${name(categoryId)} (${r.updated})${r.rules.length ? ` · rule ${r.rules[0]}` : ""}`, r.undo);
     } catch (e) {
+      onPending?.(false);
       alert(e instanceof Error ? e.message : "Failed");
     } finally {
       setBusy(false);

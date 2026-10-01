@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, money, shortDate } from "@/lib/client";
 import CategorySelect from "./CategorySelect";
 import NetOffPanel from "./NetOffPanel";
@@ -24,6 +24,8 @@ export default function TxnRow({
   onChanged: (msg?: string) => void;
 }) {
   const [cat, setCat] = useState(t.category_id);
+  // Follow the server's value after reloads (e.g. "Apply to all" changed this row too).
+  useEffect(() => setCat(t.category_id), [t.category_id]);
   const [offer, setOffer] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const acct = accounts.find((a) => a.id === t.account_id);
@@ -70,6 +72,7 @@ export default function TxnRow({
         if (!id) onChanged();
       }
     } catch (e) {
+      if (!applyAll) setCat(t.category_id); // the change didn't stick: show what's saved
       alert(e instanceof Error ? e.message : "Failed");
     } finally {
       setBusy(false);
