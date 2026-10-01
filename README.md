@@ -301,6 +301,23 @@ Open the site in Safari (iOS) → Share → **Add to Home Screen**, or in Chrome
 
 ---
 
+## Speed
+Nearly all the time a screen takes is network round trips between Vercel and
+Supabase (each page makes 6–20 small queries; processing is ~25 ms). So:
+- **Same region.** `vercel.json` pins functions to `syd1` (Sydney). Your
+  Supabase project should be in Sydney too (Supabase → Project Settings →
+  General → Region). If it isn't, change `regions` in `vercel.json` to the
+  Vercel region nearest to it. Across the Pacific each query costs ~0.2 s;
+  in the same region it's a few milliseconds.
+- **Sign-in checked locally.** The session is verified with `getClaims()`
+  instead of calling Supabase Auth on every request. For this to skip the
+  network entirely, turn on asymmetric JWT signing keys (Supabase → Project
+  Settings → JWT Keys → migrate to signing keys). Without them it still works
+  but asks Supabase Auth each time.
+- **In the app.** Screens show their last data instantly while refreshing,
+  identical requests are shared, Activity search waits for you to stop typing,
+  and inbox taps remove the group straight away.
+
 ## Assumptions
 
 - **Single user.** One Supabase user identified by `OWNER_EMAIL`; any other email is refused. `OWNER_EMAIL` is required once Supabase is configured.

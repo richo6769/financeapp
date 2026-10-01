@@ -26,9 +26,11 @@ export async function getStore(): Promise<Store> {
     return localSingleton;
   }
   const sb = await createUserClient();
-  const { data } = await sb.auth.getUser();
-  const user = data.user;
-  if (!user) throw new UnauthorizedError();
+  // Verified locally where possible (see proxy.ts); RLS still checks every query.
+  const { data } = await sb.auth.getClaims();
+  const claims = data?.claims;
+  if (!claims?.sub) throw new UnauthorizedError();
+  const user = { id: claims.sub, email: typeof claims.email === "string" ? claims.email : undefined };
   // Single-user app: OWNER_EMAIL is mandatory once Supabase is on.
   if (!env.ownerEmail) throw new Error("Set OWNER_EMAIL to your email address to use Supabase mode.");
   if (user.email?.toLowerCase() !== env.ownerEmail) throw new UnauthorizedError();

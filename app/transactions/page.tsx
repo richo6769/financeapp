@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApi } from "@/components/useApi";
 import TxnRow from "@/components/TxnRow";
 import AddCash from "@/components/AddCash";
@@ -8,6 +8,12 @@ import type { Account, Cat, Txn } from "@/components/types";
 
 export default function Transactions() {
   const [q, setQ] = useState("");
+  // Search once typing pauses, not on every keystroke.
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    const h = setTimeout(() => setQuery(q.trim()), 300);
+    return () => clearTimeout(h);
+  }, [q]);
   const [account, setAccount] = useState("");
   const [category, setCategory] = useState("");
   const [from, setFrom] = useState("");
@@ -17,14 +23,14 @@ export default function Transactions() {
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
-    if (q.trim()) p.set("q", q.trim());
+    if (query) p.set("q", query);
     if (account) p.set("account", account);
     if (category) p.set("category", category);
     if (from) p.set("from", from);
     if (to) p.set("to", to);
     p.set("limit", "300");
     return p.toString();
-  }, [q, account, category, from, to]);
+  }, [query, account, category, from, to]);
 
   const txns = useApi<{ total: number; items: Txn[] }>(`/api/transactions?${qs}`);
   const cats = useApi<{ categories: Cat[] }>("/api/categories");

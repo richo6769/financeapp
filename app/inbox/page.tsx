@@ -25,7 +25,16 @@ export default function Inbox() {
   const [guessing, setGuessing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [ruleFor, setRuleFor] = useState<Record<string, boolean>>({});
-  const groups = inbox.data?.groups ?? [];
+  // Groups being saved disappear immediately (optimistic); cleared when fresh data arrives.
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  useEffect(() => setHidden(new Set()), [inbox.data]);
+  const hide = (keys: string[], on: boolean) =>
+    setHidden((cur) => {
+      const next = new Set(cur);
+      keys.forEach((k) => (on ? next.add(k) : next.delete(k)));
+      return next;
+    });
+  const groups = (inbox.data?.groups ?? []).filter((g) => !hidden.has(g.key));
   const catList = cats.data?.categories ?? [];
   const pending = groups.filter((g) => guesses[g.key]);
   const wantsRule = (g: Group) => ruleFor[g.key] ?? g.count > 1;
@@ -78,6 +87,8 @@ export default function Inbox() {
 
   async function saveAll() {
     setSaving(true);
+    const keys = pending.map((g) => g.key);
+    hide(keys, true);
     try {
       const r = await api<{ updated: number; rules: string[]; undo: Undo }>("/api/inbox", {
         method: "POST",
@@ -86,6 +97,7 @@ export default function Inbox() {
       flash(`Saved ${pending.length} group${pending.length === 1 ? "" : "s"} (${r.updated} transactions)${r.rules.length ? ` · ${r.rules.length} rule${r.rules.length === 1 ? "" : "s"}` : ""}`, r.undo);
       inbox.reload();
     } catch (e) {
+      hide(keys, false);
       alert(e instanceof Error ? e.message : "Failed");
     } finally {
       setSaving(false);
@@ -141,6 +153,7 @@ export default function Inbox() {
               onDismissGuess={() => dismiss(g.key)}
               rule={wantsRule(g)}
               onRuleChange={(v) => setRuleFor((cur) => ({ ...cur, [g.key]: v }))}
+              onPending={(on) => hide([g.key], on)}
               onSaved={(msg, u) => {
                 flash(msg, u);
                 inbox.reload();

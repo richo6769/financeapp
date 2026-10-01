@@ -9,9 +9,11 @@ import { loadLinkTotals, needsCategory } from "@/lib/reimburse";
 
 export async function dashboard(store: Store, mode: PeriodMode = "month") {
   const today = todayLocal();
-  const status = await budgetStatus(store, { mode });
   const trendFrom = monthStart(addMonths(today, -5));
-  const [{ txns, cats }, accounts, pending, lastSync, uncategorised, weekly, recap, ious] = await Promise.all([
+  // Everything at once: each query is a network round trip to Supabase.
+  const [status, linkTotals, { txns, cats }, accounts, pending, lastSync, uncategorised, weekly, recap, ious] = await Promise.all([
+    budgetStatus(store, { mode }),
+    loadLinkTotals(store),
     spendingByCategory(store, trendFrom, today),
     store.select("accounts"),
     store.select("pending_transactions"),
@@ -21,7 +23,6 @@ export async function dashboard(store: Store, mode: PeriodMode = "month") {
     store.select("weekly_recaps", undefined, { order: { column: "week_start", ascending: false }, limit: 1 }),
     store.select("ious", { eq: { status: "open" } }),
   ]);
-  const linkTotals = await loadLinkTotals(store);
   const months: string[] = [];
   for (let i = 5; i >= 0; i--) months.push(monthKey(addMonths(monthStart(today), -i)));
   const trend = months.map((m) => ({
