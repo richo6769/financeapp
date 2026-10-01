@@ -86,6 +86,15 @@ Settings → Bank sync.
    and any net-off link that no longer fits is removed.
 9. A `sync_log` row records the result + warnings. Triggered by **Sync now** or the daily cron.
 
+### What makes up a category
+Tap any category bar on the home page to open its breakdown for the same period
+(this month or pay cycle). It shows the total, "Where it went" by merchant with
+each one's share, and subcategories if you use them. Below that are the
+transactions themselves, which you can recategorise, net off or IOU right there.
+Tap a merchant to show only its transactions. The total always matches the bar:
+net offs count at their net amount, refunds reduce it, and trips kept separate
+are left out.
+
 ### Uncategorised inbox
 The inbox groups transactions by merchant (money in and money out separately),
 biggest groups first, e.g. "Sushi Sama ×33".

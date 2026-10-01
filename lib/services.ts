@@ -525,6 +525,58 @@ export async function spendingByCategory(
   return { rows, total: fromCents(total), income: fromCents(income), trip_excluded: fromCents(tripExcluded), saved: fromCents(saved), txns, cats };
 }
 
+/**
+ * What makes up one category's spend for a period (the home-page bars).
+ * Uses spendingByCategory's own rows, so the total always matches the bar:
+ * net offs at their net amount, refunds reduce it, trips kept separate stay out.
+ * `category` is a root category id, or null for Uncategorised.
+ */
+export async function categoryBreakdown(store: Store, category: string | null, from: string, to: string) {
+  if (from > to) throw new UserError("from must be on or before to");
+  const { txns, cats, trip_excluded } = await spendingByCategory(store, from, to);
+  const cat = category ? cats.find((c) => c.id === category && !c.parent_id) : null;
+  if (category && !cat) throw new UserError("Category not found");
+  const rows = txns
+    .filter((t) => !t.removed_at && (cat ? rootOf(cats, t.category_id)?.id === cat.id : !t.category_id))
+    .map((t) => ({ t, cents: spendCentsOf(t, cats) }))
+    .filter(({ t, cents }) => cents !== 0 || t.category_id) // uncategorised income isn't spending
+    .sort((a, b) => b.t.local_date.localeCompare(a.t.local_date) || b.cents - a.cents);
+  const merchantOf = (t: Transaction) => t.merchant_name ?? cleanDescription(t.description);
+  const merchants = new Map<string, { spent: Cents; count: number }>();
+  const subs = new Map<string, { spent: Cents; count: number }>();
+  for (const { t, cents } of rows) {
+    const m = merchantOf(t);
+    const cur = merchants.get(m) ?? { spent: 0, count: 0 };
+    cur.spent += cents;
+    cur.count++;
+    merchants.set(m, cur);
+    if (cat && t.category_id !== cat.id) {
+      const name = cats.find((c) => c.id === t.category_id)?.name ?? "Other";
+      const sc = subs.get(name) ?? { spent: 0, count: 0 };
+      sc.spent += cents;
+      sc.count++;
+      subs.set(name, sc);
+    }
+  }
+  const total: Cents = rows.reduce((a, r) => a + r.cents, 0);
+  const list = (m: Map<string, { spent: Cents; count: number }>) =>
+    [...m.entries()]
+      .sort((a, b) => b[1].spent - a[1].spent)
+      .map(([name, v]) => ({ name, spent: fromCents(v.spent), count: v.count, pct: total > 0 ? Math.round((v.spent * 100) / total) : null }));
+  return {
+    category: cat ? { id: cat.id, name: cat.name, color: cat.color } : { id: null, name: "Uncategorised", color: "#9ca3af" },
+    from,
+    to,
+    total: fromCents(total),
+    count: rows.length,
+    merchants: list(merchants),
+    subcategories: list(subs),
+    /** Trip spending left out of every category this period (all categories, not just this one). */
+    trip_excluded,
+    items: rows.map(({ t, cents }) => ({ id: t.id, spent: fromCents(cents), merchant: merchantOf(t) })),
+  };
+}
+
 export type PeriodMode = "month" | "cycle";
 
 export async function budgetStatus(store: Store, opts: { month?: string; mode?: PeriodMode } | string = {}) {
@@ -677,4 +729,4 @@ export async function querySpending(
 }
 
 export { clip } from "@/lib/text";
-import { clip } from "@/lib/text";
+import { clip, cleanDescription } from "@/lib/text";
