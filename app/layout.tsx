@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   title: "Kiwi Ledger",
   description: "Personal finance tracker (NZD)",
   manifest: "/manifest.webmanifest",
-  appleWebApp: { capable: true, title: "Kiwi Ledger", statusBarStyle: "default" },
+  appleWebApp: { capable: true, title: "Kiwi Ledger", statusBarStyle: "black-translucent" },
   icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
 };
 
@@ -15,10 +15,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f7f9" },
-    { media: "(prefers-color-scheme: dark)", color: "#0b0f14" },
-  ],
+  themeColor: "#16191f",
 };
 
 export const dynamic = "force-dynamic";
@@ -26,7 +23,15 @@ export const dynamic = "force-dynamic";
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const status = integrationStatus();
   return (
-    <html lang="en-NZ">
+    <html lang="en-NZ" data-theme="dark" suppressHydrationWarning>
+      <head>
+        {/* Apply the saved appearance before first paint (dark unless you chose otherwise in Settings). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem("ledger:theme");if(t==="light"||t==="system")document.documentElement.dataset.theme=t}catch(e){}`,
+          }}
+        />
+      </head>
       <body>
         <AppShell status={status}>{children}</AppShell>
       </body>

@@ -1,46 +1,81 @@
 @import "tailwindcss";
 
+/* Light (warm). Dark is the default — see the data-theme script in layout.tsx. */
 :root {
-  --bg: #f6f7f9;
+  --bg: #f6f2ee;
+  --bg-glow: rgba(214, 120, 70, 0.18);
   --surface: #ffffff;
-  --surface-2: #f1f3f6;
-  --ink: #111827;
-  --muted: #6b7280;
-  --border: #e5e7eb;
-  --accent: #0f766e;
+  --surface-solid: #ffffff;
+  --surface-2: #f1ebe5;
+  --ink: #1f1b18;
+  --muted: #776e67;
+  --border: #e9e1d9;
+  --accent: #c2531f;
   --accent-ink: #ffffff;
-  --accent-soft: #ccfbf1;
-  --danger: #b91c1c;
-  --danger-soft: #fee2e2;
-  --good: #15803d;
-  --warn: #b45309;
-  --bar: #0f766e;
-  --track: #e5e7eb;
+  --accent-soft: #fbe3d6;
+  --danger: #c0352f;
+  --danger-soft: #fde4e2;
+  --good: #1d8a4d;
+  --warn: #b26b00;
+  --bar: #c2531f;
+  --track: #ece4dc;
+  --nav: rgba(255, 255, 255, 0.86);
+  --chart-spent: #0f8a6d;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #16191f;
+  --bg-glow: rgba(205, 110, 58, 0.34);
+  --surface: rgba(255, 255, 255, 0.045);
+  --surface-solid: #1e2229;
+  --surface-2: rgba(255, 255, 255, 0.075);
+  --ink: #f3f0ec;
+  --muted: #a39d96;
+  --border: rgba(255, 255, 255, 0.09);
+  --accent: #c9673f;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(201, 103, 63, 0.24);
+  --danger: #f26d6a;
+  --danger-soft: rgba(242, 109, 106, 0.15);
+  --good: #5fd08a;
+  --warn: #f2b84b;
+  --bar: #c9673f;
+  --track: rgba(255, 255, 255, 0.1);
+  --nav: rgba(30, 33, 40, 0.82);
+  --chart-spent: #1fa385;
+  color-scheme: dark;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b0f14;
-    --surface: #131a22;
-    --surface-2: #1b2430;
-    --ink: #e5e7eb;
-    --muted: #9ca3af;
-    --border: #253040;
-    --accent: #2dd4bf;
-    --accent-ink: #042f2e;
-    --accent-soft: #134e4a;
-    --danger: #f87171;
-    --danger-soft: #3b1414;
-    --good: #4ade80;
-    --warn: #fbbf24;
-    --bar: #2dd4bf;
-    --track: #253040;
+  :root[data-theme="system"] {
+    --bg: #16191f;
+    --bg-glow: rgba(205, 110, 58, 0.34);
+    --surface: rgba(255, 255, 255, 0.045);
+    --surface-solid: #1e2229;
+    --surface-2: rgba(255, 255, 255, 0.075);
+    --ink: #f3f0ec;
+    --muted: #a39d96;
+    --border: rgba(255, 255, 255, 0.09);
+    --accent: #c9673f;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(201, 103, 63, 0.24);
+    --danger: #f26d6a;
+    --danger-soft: rgba(242, 109, 106, 0.15);
+    --good: #5fd08a;
+    --warn: #f2b84b;
+    --bar: #c9673f;
+    --track: rgba(255, 255, 255, 0.1);
+    --nav: rgba(30, 33, 40, 0.82);
+  --chart-spent: #1fa385;
+    color-scheme: dark;
   }
 }
 
 @theme inline {
   --color-bg: var(--bg);
   --color-surface: var(--surface);
+  --color-surface-solid: var(--surface-solid);
   --color-surface-2: var(--surface-2);
   --color-ink: var(--ink);
   --color-muted: var(--muted);
@@ -62,25 +97,51 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Warm glow from the bottom of the screen (a fixed layer: iOS ignores background-attachment: fixed). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 55% at 50% 108%, var(--bg-glow), transparent 62%),
+    linear-gradient(180deg, transparent 0%, transparent 55%, color-mix(in srgb, var(--bg-glow) 35%, transparent) 100%);
+}
+
 body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-variant-numeric: tabular-nums;
+  isolation: isolate;
 }
 
 @layer components {
   .card {
-    @apply rounded-2xl border border-border bg-surface p-4;
+    @apply rounded-3xl border border-border bg-surface p-4;
   }
   .input {
-    @apply rounded-xl border border-border bg-surface px-3 py-2 text-base outline-none focus:border-accent;
+    @apply rounded-xl border border-border bg-surface-solid px-3 py-2 text-base outline-none focus:border-accent;
   }
   .btn {
-    @apply inline-flex items-center justify-center gap-1 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium active:scale-[0.98] disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-1 rounded-full border border-border bg-surface-2 px-3.5 py-2 text-sm font-medium active:scale-[0.98] disabled:opacity-50;
   }
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-1 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-ink active:scale-[0.98] disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-1 rounded-full bg-accent px-4 py-2 text-sm font-semibold text-accent-ink shadow-[0_6px_20px_-8px_var(--accent)] active:scale-[0.98] disabled:opacity-50;
   }
   .chip {
     @apply inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted;
+  }
+  .icon-btn {
+    @apply inline-flex h-10 w-10 items-center justify-center rounded-full border border-border bg-surface-2 text-ink active:scale-95;
+  }
+  /* Segmented control (Spending / Income, Summary / Pace, …). */
+  .seg {
+    @apply inline-flex w-full rounded-full border border-border bg-surface-2 p-1 text-sm;
+  }
+  .seg > button {
+    @apply flex-1 rounded-full px-3 py-1.5 text-muted transition-colors;
+  }
+  .seg > button[aria-selected="true"] {
+    @apply bg-accent font-semibold text-accent-ink;
   }
 }

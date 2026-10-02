@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 const ITEMS = [
-  { href: "/budgets", title: "Budgets & weekly caps", sub: "Monthly budgets, overall cap, Mon–Sun caps, categories" },
+  { href: "/insights", title: "Categories", sub: "Spending and income by category, vs the previous period" },
+  { href: "/budgets", title: "Edit budgets & weekly caps", sub: "Monthly budgets, overall cap, Mon–Sun caps, categories" },
   { href: "/owed", title: "Owed to me", sub: "IOUs grouped by person" },
   { href: "/trips", title: "Trips", sub: "Trip budgets, daily spend, foreign currency" },
   { href: "/subscriptions", title: "Subscriptions", sub: "Recurring charges, price rises, missed charges" },

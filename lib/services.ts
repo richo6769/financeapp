@@ -622,10 +622,15 @@ export async function budgetStatus(
   }
   const spend = await spendingByCategory(store, from, to, { scaleBudget: scale });
   const { rows } = spend;
-  // Cumulative spend per day (for the pace chart).
+  // Cumulative spend per day for the pace chart: everything with an overall
+  // cap, otherwise just the budgeted categories (what the limit is compared with).
+  const budgetedRoots = new Set(rows.filter((r) => r.budget != null && r.category_id).map((r) => r.category_id!));
+  // With no cap and no budgets there's no limit: measure everything.
+  const measureAll = settings?.overall_monthly_cap != null || budgetedRoots.size === 0;
   const perDay = new Map<string, Cents>();
   for (const t of spend.txns) {
     if (t.removed_at) continue;
+    if (!measureAll && !budgetedRoots.has(rootOf(spend.cats, t.category_id)?.id ?? "")) continue;
     const c = spendCentsOf(t, spend.cats);
     if (c) perDay.set(t.local_date, (perDay.get(t.local_date) ?? 0) + c);
   }
@@ -678,7 +683,11 @@ export async function budgetStatus(
     /** Dates to load the previous/next period (null when the next one hasn't started). */
     prev_at: addDays(from, -1),
     next_at: isCurrent ? null : addDays(periodEnd, 1),
+    /** Cumulative per day of what's compared with the limit (all spend with a cap, else budgeted categories). */
     daily,
+    measured_spent: measureAll ? fromCents(total) : fromCents(measured),
+    measures_all: measureAll,
+    budgeted_root_ids: [...budgetedRoots],
     day_of_month: dayOf,
     days_in_month: daysIn,
     days_left: daysLeft,

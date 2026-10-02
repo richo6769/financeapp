@@ -17,7 +17,7 @@ import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
 import { addDays, addMonths, daysBetween, monthStart, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
 import { accountKey, categorise, findRule, isCardCharge, looksLikeTransfer, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
-import { budgetStatus, categoryBreakdown, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
+import { budgetStatus, categoryBreakdown, createRule, findTransactions, setBudget, setOverallCap, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { dashboard } from "@/lib/dashboard";
 import { describeNet, linkReimbursement, unlinkReimbursement } from "@/lib/reimburse";
 import { cancelIou, createIou, listIous, owedByPerson } from "@/lib/iou";
@@ -31,6 +31,7 @@ import { executeTool } from "@/lib/chat/tools";
 import { runMockPlanner } from "@/lib/chat/mock";
 import { clip, cleanDescription } from "@/lib/text";
 import { budgetOverview, dailySpend, insights } from "@/lib/overview";
+import { categoryIcon } from "@/lib/catIcons";
 import { autoGuess, categoriseGroups, dismissGuess, guessCategories, inboxGroups, parseGuesses, quickCategories, storedGuesses, undoCategorise } from "@/lib/inbox";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "financeapp-features-"));
@@ -1151,7 +1152,8 @@ async function budgetTabAndInsights() {
   assert.equal(last.is_current, false);
   assert.equal(last.next_at, cur.from);
   assert.equal(last.daily.length, daysBetween(last.from, last.to) + 1);
-  assert.equal(last.daily.at(-1)!.spent, last.total_spent, "the pace line ends at the total");
+  assert.equal(last.daily.at(-1)!.spent, last.total_spent, "no budgets yet: the pace line ends at all spending");
+  assert.equal(last.measures_all, true);
   // Pay cycles navigate too.
   await savePayCycle(store, "fortnightly", addDays(today, -3));
   const cyc = await budgetStatus(store, { mode: "cycle" });
@@ -1166,12 +1168,26 @@ async function budgetTabAndInsights() {
   const ov = await budgetOverview(store, "month");
   assert.equal(ov.limit, 900);
   assert.ok(ov.upcoming.every((u) => u.date >= today && u.date <= ov.status.period_end));
-  assert.equal(toCents(ov.safe_to_spend!), toCents(900) - toCents(ov.status.total_spent) - toCents(ov.upcoming_total));
-  assert.ok(ov.forecast >= ov.status.total_spent);
+  // No overall cap: the limit is the category budgets, so only those categories count.
+  assert.equal(ov.measures, "budgeted categories");
+  assert.equal(toCents(ov.spent), toCents(ov.status.budgeted_categories_spent));
+  assert.ok(ov.spent <= ov.status.total_spent);
+  assert.equal(toCents(ov.safe_to_spend!), toCents(900) - toCents(ov.spent) - toCents(ov.upcoming_total));
+  assert.ok(ov.forecast >= ov.spent);
+  assert.equal(ov.status.daily.at(-1)!.spent, ov.spent, "pace line = budgeted spend");
+  // With an overall cap, everything counts.
+  await setOverallCap(store, 3000);
+  const capped = await budgetOverview(store, "month");
+  assert.equal(capped.measures, "all spending");
+  assert.equal(capped.limit, 3000);
+  assert.equal(capped.spent, capped.status.total_spent);
+  assert.equal(toCents(capped.safe_to_spend!), toCents(3000) - toCents(capped.spent) - toCents(capped.upcoming_total));
+  assert.ok(capped.upcoming.length >= ov.upcoming.length, "with a cap every bill counts");
+  await setOverallCap(store, null);
   assert.equal(ov.days_to_payday, daysBetween(today, ov.next_payday!));
   const past = await budgetOverview(store, "month", ov.status.prev_at);
   assert.equal(past.safe_to_spend, null, "no safe-to-spend for a finished period");
-  ok(`safe to spend = $900 budgets − spent − ${ov.upcoming.length} upcoming subscription(s); next payday in ${ov.days_to_payday} days`);
+  ok(`safe to spend: budgets ($900) − budgeted spend − bills due in those categories; with a cap, cap − all spending − all bills; next payday in ${ov.days_to_payday} days`);
 
   // Categories comparison matches the home page totals, previous period is the same length.
   const ins = await insights(store, "spending", last.from, last.to);
@@ -1203,6 +1219,13 @@ async function budgetTabAndInsights() {
   const logos = await s2.select("merchant_logos");
   assert.deepEqual(logos.map((l) => [l.merchant_key, l.url]), [["coffee supreme", "https://cdn.akahu.nz/logos/coffee.png"]]);
   ok("merchant logos saved from Akahu (https only); others show initials");
+
+  // Category icons: every default category gets its own, and "Transport" isn't read as "sport".
+  const icons = new Map((await freshStore().then((x) => x.select("categories"))).map((c) => [c.name, categoryIcon(c.name, c.kind)]));
+  assert.equal(icons.get("Transport/Fuel"), "⛽");
+  assert.equal(icons.get("Sports"), "⚽");
+  assert.ok(![...icons.values()].includes("🏷️") || icons.get("Other") === "🏷️", "only Other uses the generic tag");
+  ok(`category icons for all ${icons.size} default categories (Transport ⛽ ≠ Sports ⚽)`);
 }
 
 async function main() {

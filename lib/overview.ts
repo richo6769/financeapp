@@ -6,7 +6,7 @@ import { listSubscriptions } from "@/lib/subscriptions";
 import { currentCycle } from "@/lib/paycycle";
 import { rootOf } from "@/lib/categories";
 import { addDays, daysBetween, todayLocal } from "@/lib/dates";
-import { fromCents, toCents, type Cents } from "@/lib/money";
+import { fromCents, mulDiv, toCents, type Cents } from "@/lib/money";
 
 /**
  * The Budget tab: the period's numbers plus what's still to come.
@@ -20,15 +20,20 @@ export async function budgetOverview(store: Store, mode: PeriodMode, at?: string
     store.select("settings"),
     listSubscriptions(store).catch(() => ({ subscriptions: [] as Awaited<ReturnType<typeof listSubscriptions>>["subscriptions"] })),
   ]);
+  // Without an overall cap the limit is the sum of category budgets, so only
+  // those categories' spending (and bills) count against it.
+  const capped = status.measures_all;
+  const cats = capped ? [] : await store.select("categories");
+  const counts = (categoryId: string | null) => capped || status.budgeted_root_ids.includes(rootOf(cats, categoryId)?.id ?? "");
   const upcoming = status.is_current
     ? subs.subscriptions
-        .filter((x) => !x.lapsed && !x.ignored && x.next_expected >= today && x.next_expected <= status.period_end)
+        .filter((x) => !x.lapsed && !x.ignored && x.next_expected >= today && x.next_expected <= status.period_end && counts(x.category_id))
         .map((x) => ({ name: x.name, amount: x.amount, date: x.next_expected }))
         .sort((a, b) => a.date.localeCompare(b.date))
     : [];
   const upcomingC: Cents = upcoming.reduce((a, u) => a + toCents(u.amount), 0);
   const limit = status.overall_cap ?? (status.total_of_category_budgets || null);
-  const spentC = toCents(status.total_spent);
+  const spentC = toCents(status.measured_spent);
   const safe = limit == null || !status.is_current ? null : fromCents(toCents(limit) - spentC - upcomingC);
   // Next payday: the day after the current pay cycle ends (needs pay frequency in Settings).
   const cyc = currentCycle(settingsRows[0], today);
@@ -39,8 +44,13 @@ export async function budgetOverview(store: Store, mode: PeriodMode, at?: string
     upcoming,
     upcoming_total: fromCents(upcomingC),
     safe_to_spend: safe,
-    /** Spent so far plus subscriptions still due, or the straight-line projection if higher. */
-    forecast: status.is_current ? Math.max(status.projected_month_spend, fromCents(spentC + upcomingC)) : status.total_spent,
+    /** What's compared with the limit: all spending with an overall cap, else budgeted categories only. */
+    spent: status.measured_spent,
+    measures: capped ? ("all spending" as const) : ("budgeted categories" as const),
+    /** Spent so far plus bills still due, or the straight-line projection if higher. */
+    forecast: status.is_current
+      ? Math.max(fromCents(mulDiv(spentC, status.days_in_month, status.day_of_month)), fromCents(spentC + upcomingC))
+      : status.measured_spent,
     next_payday: nextPayday,
     days_to_payday: nextPayday ? daysBetween(today, nextPayday) : null,
     period_days_left: status.is_current ? daysBetween(today, status.period_end) + 1 : 0,

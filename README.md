@@ -86,6 +86,22 @@ Settings → Bank sync.
    and any net-off link that no longer fits is removed.
 9. A `sync_log` row records the result + warnings. Triggered by **Sync now** or the daily cron.
 
+### Screens
+- **Look:** warm dark theme by default (Settings → Appearance: Dark, Light or follow the phone). There's a floating pill nav (Home, Activity, Budget, Inbox, More) and a separate ✨ button for the AI chat.
+- **Activity:**
+  - **All** groups transactions by day, with each day's net. Transfers and savings are dimmed. Each row shows the merchant logo, or coloured initials when Akahu has no logo (logos need `supabase/migrations/20261002000000_merchant_logos.sql`). Rows also show the category icon and ✨ Auto when categorised automatically. Tap a row to change its category, net off or add an IOU.
+  - **Filters & summary** holds search, category, account and dates, plus money in and out. Pending transactions sit at the top.
+  - **Calendar** is a month heatmap of spend per day. Tap a day to see its transactions.
+  - **Recurring** is your subscriptions.
+- **Budget:**
+  - **‹ ›** steps through months or pay cycles. The card shows next payday, days left, and **Summary** or **Pace**.
+  - **Summary** is a ring of spent plus still to come against the limit. **Pace** is a cumulative line against an even pace.
+  - **Safe to spend** = limit − spent − bills still due this period (detected subscriptions). With an overall cap everything counts. Otherwise the limit is the sum of category budgets and only those categories count, as on Home.
+  - Below are a card per budgeted category, with a pace marker and On track, Ahead of pace or $X over, and a list of other spending. Every card opens the breakdown for that period.
+- **Categories:** Spending or Income for 1M, 3M, 1Y, All or Custom.
+  - Each category or group (Food, Housing, Utilities…) is compared with the previous period of the same length; a marker shows the previous amount.
+  - Tap to drill in.
+
 ### What makes up a category
 Tap any category bar on the home page to open its breakdown for the same period
 (this month or pay cycle). It shows the total, "Where it went" by merchant with
@@ -221,7 +237,8 @@ Tools: `create_category`, `update_category`, `delete_category`, `set_budget`,
 2. **SQL Editor** → run the files in `supabase/migrations/` in order:
    `20260924000000_init.sql`, `20260924000100_seed_defaults.sql`,
    `20260925000000_reimbursement_links.sql`, `20260926000000_features.sql`,
-   `20260930000000_savings.sql`, `20261001000000_category_guesses.sql`.
+   `20260930000000_savings.sql`, `20261001000000_category_guesses.sql`,
+   `20261002000000_merchant_logos.sql`.
    (Already set up? Just run any you haven't: the last two are safe to re-run.
    The app adds the Savings category and its rules to existing data on next
    load. Until `category_guesses` exists, the inbox works but guesses aren't

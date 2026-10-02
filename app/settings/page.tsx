@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import ThemePicker from "@/components/ThemePicker";
 import { useApi } from "@/components/useApi";
 import { api, shortDate } from "@/lib/client";
 import { SYNC_EVENT } from "@/components/SyncButton";
@@ -37,6 +38,7 @@ export default function SettingsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Sync & settings</h1>
+      <ThemePicker />
       {msg && <p className="rounded-xl bg-accent-soft px-3 py-2 text-sm" role="status">{msg}</p>}
 
       <section className="card space-y-2">
