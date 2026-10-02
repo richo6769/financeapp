@@ -249,6 +249,15 @@ export interface CategoryGuess {
   created_at: string;
 }
 
+/** Merchant logo URL from Akahu, keyed like subscriptions (normalised merchant). */
+export interface MerchantLogo {
+  id: string;
+  user_id: string;
+  merchant_key: string;
+  url: string;
+  updated_at: string;
+}
+
 export interface Tables {
   accounts: Account;
   transactions: Transaction;
@@ -268,6 +277,7 @@ export interface Tables {
   weekly_caps: WeeklyCap;
   weekly_recaps: WeeklyRecap;
   category_guesses: CategoryGuess;
+  merchant_logos: MerchantLogo;
 }
 
 export type TableName = keyof Tables;

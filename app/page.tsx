@@ -197,7 +197,7 @@ export default function Dashboard() {
       <section className="card">
         <div className="mb-1 flex items-center justify-between">
           <h2 className="font-semibold">Budgets</h2>
-          <Link href="/budgets" className="text-sm text-accent">Edit</Link>
+          <Link href="/budget" className="text-sm text-accent">Budget →</Link>
         </div>
         {s.categories.length === 0 && <p className="text-sm text-muted">No spending yet this period.</p>}
         {s.categories.map((c) => (

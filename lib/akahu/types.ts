@@ -19,7 +19,8 @@ export interface AkahuTransaction {
   amount: number;
   balance?: number;
   type: string; // EFTPOS | DEBIT | CREDIT | PAYMENT | TRANSFER | STANDING ORDER | ...
-  merchant?: { _id: string; name: string };
+  /** Akahu enrichment; `logo` is a URL when Akahu knows the merchant. */
+  merchant?: { _id: string; name: string; logo?: string; website?: string };
   category?: {
     _id: string;
     name: string;
@@ -30,6 +31,8 @@ export interface AkahuTransaction {
     code?: string;
     reference?: string;
     other_account?: string;
+    /** Merchant logo URL (enrichment). */
+    logo?: string;
     /** Present for foreign-currency transactions. */
     conversion?: { amount: number; currency: string; rate?: number; fee?: number };
   };

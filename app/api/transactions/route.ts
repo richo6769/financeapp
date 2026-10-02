@@ -6,6 +6,7 @@ import { loadMembership } from "@/lib/trips";
 import { balanceCents } from "@/lib/iou";
 import { fromCents } from "@/lib/money";
 import { UserError } from "@/lib/errors";
+import { merchantKey } from "@/lib/subscriptions";
 
 export const dynamic = "force-dynamic";
 
@@ -22,12 +23,15 @@ export const GET = (req: Request) =>
     });
     const visible = rows; // "uncategorised" already excludes removed + fully netted-off rows
     const pageRows = visible.slice(0, limit);
-    const [cats, page, { trips, membership }, ious] = await Promise.all([
+    const [cats, page, { trips, membership }, ious, logos] = await Promise.all([
       store.select("categories"),
       describeNet(store, pageRows),
       loadMembership(store),
       pageRows.length ? store.select("ious", { in: { expense_id: pageRows.map((t) => t.id) } }) : Promise.resolve([]),
+      // Optional table: initials are shown when there's no logo (or no table yet).
+      store.select("merchant_logos").catch(() => []),
     ]);
+    const logoOf = new Map(logos.map((l) => [l.merchant_key, l.url]));
     return {
       total: visible.length,
       items: page.map((t) => {
@@ -36,6 +40,8 @@ export const GET = (req: Request) =>
           ...t,
           category_label: categoryLabel(cats, t.category_id),
           category_kind: rootOf(cats, t.category_id)?.kind ?? null,
+          category_color: rootOf(cats, t.category_id)?.color ?? null,
+          logo: logoOf.get(merchantKey(t)) ?? null,
           trip: tripId ? { id: tripId, name: trips.find((x) => x.id === tripId)?.name ?? "Trip" } : null,
           ious: ious
             .filter((i) => i.expense_id === t.id && i.status !== "cancelled")

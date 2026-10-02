@@ -11,6 +11,7 @@ import type {
   Transaction,
 } from "@/lib/types";
 import {
+  addDays,
   addMonths,
   daysBetween,
   localDateToIso,
@@ -579,34 +580,41 @@ export async function categoryBreakdown(store: Store, category: string | null, f
 
 export type PeriodMode = "month" | "cycle";
 
-export async function budgetStatus(store: Store, opts: { month?: string; mode?: PeriodMode } | string = {}) {
+export async function budgetStatus(
+  store: Store,
+  opts: { month?: string; mode?: PeriodMode; /** Any date in the wanted period (month or pay cycle); default today. */ at?: string } | string = {},
+) {
   const o = typeof opts === "string" ? { month: opts } : opts;
   const today = todayLocal();
   const [settingsRows] = await Promise.all([store.select("settings")]);
   const settings = settingsRows[0];
-  const cycle = o.mode === "cycle" && !o.month ? currentCycle(settings, today) : null;
+  const at = o.at && o.at < today ? o.at : today; // never a future period
+  const cycle = o.mode === "cycle" && !o.month ? currentCycle(settings, at) : null;
 
-  let from: string, to: string, label: string, key: string;
+  let from: string, to: string, label: string, key: string, periodEnd: string, isCurrent: boolean;
   let dayOf: number, daysIn: number, daysLeft: number, fracNum: number, fracDen: number;
   let scale: ((c: Cents) => Cents) | undefined;
   if (cycle) {
+    isCurrent = cycle.start <= today && today <= cycle.end;
     from = cycle.start;
-    to = today;
+    periodEnd = cycle.end;
+    to = isCurrent ? today : cycle.end;
     key = `cycle:${cycle.start}`;
     label = `Pay cycle ${shortLabel(cycle.start)} – ${shortLabel(cycle.end)}`;
-    dayOf = daysBetween(cycle.start, today) + 1;
     daysIn = cycle.lengthDays;
-    daysLeft = daysBetween(today, cycle.end);
-    [fracNum, fracDen] = [dayOf, daysIn];
+    dayOf = isCurrent ? daysBetween(cycle.start, today) + 1 : daysIn;
+    daysLeft = isCurrent ? daysBetween(today, cycle.end) : 0;
+    [fracNum, fracDen] = isCurrent ? [dayOf, daysIn] : [1, 1];
     scale = (c) => monthlyToCycleCents(c, cycle.frequency);
   } else {
-    const ref = o.month ? `${o.month.slice(0, 7)}-01` : today;
-    const isCurrent = monthKey(ref) === monthKey(today);
+    const ref = o.month ? `${o.month.slice(0, 7)}-01` : at;
+    isCurrent = monthKey(ref) === monthKey(today);
     from = monthStart(ref);
-    to = isCurrent ? today : monthEnd(ref);
+    periodEnd = monthEnd(ref);
+    to = isCurrent ? today : periodEnd;
     key = monthKey(ref);
     label = monthLabel(monthKey(ref), "long");
-    const prog = monthProgress(isCurrent ? today : monthEnd(ref));
+    const prog = monthProgress(isCurrent ? today : periodEnd);
     dayOf = prog.dayOfMonth;
     daysIn = prog.daysInMonth;
     daysLeft = isCurrent ? prog.daysLeft : 0;
@@ -614,6 +622,23 @@ export async function budgetStatus(store: Store, opts: { month?: string; mode?: 
   }
   const spend = await spendingByCategory(store, from, to, { scaleBudget: scale });
   const { rows } = spend;
+  // Cumulative spend per day for the pace chart: everything with an overall
+  // cap, otherwise just the budgeted categories (what the limit is compared with).
+  const budgetedRoots = new Set(rows.filter((r) => r.budget != null && r.category_id).map((r) => r.category_id!));
+  // With no cap and no budgets there's no limit: measure everything.
+  const measureAll = settings?.overall_monthly_cap != null || budgetedRoots.size === 0;
+  const perDay = new Map<string, Cents>();
+  for (const t of spend.txns) {
+    if (t.removed_at) continue;
+    if (!measureAll && !budgetedRoots.has(rootOf(spend.cats, t.category_id)?.id ?? "")) continue;
+    const c = spendCentsOf(t, spend.cats);
+    if (c) perDay.set(t.local_date, (perDay.get(t.local_date) ?? 0) + c);
+  }
+  const daily: { date: string; spent: number }[] = [];
+  for (let d = from, run = 0; d <= to; d = addDays(d, 1)) {
+    run += perDay.get(d) ?? 0;
+    daily.push({ date: d, spent: fromCents(run) });
+  }
   const capMonthly = settings?.overall_monthly_cap == null ? null : toCents(settings.overall_monthly_cap);
   const cap = capMonthly == null ? null : (scale ?? ((c: Cents) => c))(capMonthly);
   const goalMonthly = settings?.monthly_savings_goal == null ? null : toCents(settings.monthly_savings_goal);
@@ -653,6 +678,16 @@ export async function budgetStatus(store: Store, opts: { month?: string; mode?: 
     period_label: label,
     from,
     to,
+    period_end: periodEnd,
+    is_current: isCurrent,
+    /** Dates to load the previous/next period (null when the next one hasn't started). */
+    prev_at: addDays(from, -1),
+    next_at: isCurrent ? null : addDays(periodEnd, 1),
+    /** Cumulative per day of what's compared with the limit (all spend with a cap, else budgeted categories). */
+    daily,
+    measured_spent: measureAll ? fromCents(total) : fromCents(measured),
+    measures_all: measureAll,
+    budgeted_root_ids: [...budgetedRoots],
     day_of_month: dayOf,
     days_in_month: daysIn,
     days_left: daysLeft,

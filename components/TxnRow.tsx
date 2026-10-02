@@ -5,12 +5,15 @@ import { api, money, shortDate } from "@/lib/client";
 import CategorySelect from "./CategorySelect";
 import NetOffPanel from "./NetOffPanel";
 import { merchantPattern } from "@/lib/categorise";
+import { categoryIcon } from "@/lib/catIcons";
+import Avatar, { CatDot } from "./Avatar";
 import type { Account, Cat, Txn } from "./types";
 
 /**
- * One transaction with inline recategorise. After changing a category we offer
- * "apply to all from this merchant", which also creates a rule. Expenses can
- * be netted off against incoming money (see NetOffPanel).
+ * One transaction: logo, name, category and amount. Tap to open the edit
+ * panel (category, Net off, IOU, links). Uncategorised rows show the category
+ * picker straight away. After changing a category we offer "apply to all from
+ * this merchant", which also creates a rule.
  */
 export default function TxnRow({
   t,
@@ -27,6 +30,7 @@ export default function TxnRow({
   // Follow the server's value after reloads (e.g. "Apply to all" changed this row too).
   useEffect(() => setCat(t.category_id), [t.category_id]);
   const [offer, setOffer] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const acct = accounts.find((a) => a.id === t.account_id);
   const who = t.merchant_name ?? t.description;
@@ -79,26 +83,89 @@ export default function TxnRow({
     }
   }
 
+  const needsCat = !t.netted_off && !t.is_transfer && !cat;
+  const catName = cats.find((c) => c.id === cat)?.name ?? t.category_label;
+  const parentOf = (id: string | null) => {
+    const c = cats.find((x) => x.id === id);
+    return c?.parent_id ? cats.find((x) => x.id === c.parent_id) : c;
+  };
+  const root = parentOf(cat);
+  const color = root?.color ?? t.category_color ?? null;
+  const dim = t.is_transfer || !!t.removed_at;
+  const guessed = t.category_source === "akahu" || t.category_source === "merchant";
+
   return (
-    <li className="py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{who}</div>
-          <div className="truncate text-xs text-muted">
-            {shortDate(t.local_date)} · {t.is_manual ? "Cash" : (acct?.name ?? "—")}
-            {t.merchant_name && t.merchant_name !== t.description ? ` · ${t.description}` : ""}
+    <li className={`py-2.5 ${dim ? "opacity-55" : ""}`}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+        className="flex cursor-pointer items-start gap-3 rounded-2xl"
+      >
+        <Avatar name={who} logo={t.logo} />
+        <div className="min-w-0 flex-1">
+          <div className={`truncate text-[15px] font-semibold ${t.is_transfer ? "line-through decoration-1" : ""}`}>{who}</div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-muted">
+            {t.netted_off ? (
+              <>
+                <CatDot icon="✓" color="#5fd08a" />
+                <span className="truncate">{t.netted_categories.length ? `${t.netted_categories.join(", ")} · netted off` : "Netted off"}</span>
+              </>
+            ) : needsCat ? (
+              <span onClick={(e) => e.stopPropagation()} className="min-w-0">
+                <CategorySelect
+                  cats={cats}
+                  value={cat}
+                  onChange={(id) => {
+                    setCat(id);
+                    save(id, false);
+                  }}
+                  className="max-w-[12rem] py-0.5 text-xs"
+                  ariaLabel={`Category for ${who}${t.unallocated ? " (unallocated part)" : ""}`}
+                />
+              </span>
+            ) : (
+              <>
+                <CatDot icon={categoryIcon(root?.name ?? catName, root?.kind ?? t.category_kind)} color={color} />
+                <span className="truncate">{catName}</span>
+              </>
+            )}
           </div>
-          {t.foreign_currency && t.foreign_amount != null && (
-            <div className="text-xs text-muted">
-              {t.foreign_currency} {t.foreign_amount.toLocaleString("en-NZ", { maximumFractionDigits: 2 })}
+          {(guessed || t.ious.length > 0 || t.trip || t.foreign_currency || t.removed_at || (t.unallocated != null && t.unallocated > 0)) && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              {guessed && !t.is_transfer && (
+                <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-accent-ink" title="Categorised automatically — tap to change">
+                  ✨ Auto
+                </span>
+              )}
+              {t.ious.map((i) => (
+                <span key={i.id} className="rounded-full border border-[#60a5fa]/40 px-2 py-0.5 text-[11px] font-semibold text-[#60a5fa]">
+                  ● {i.status === "settled" ? `${i.person_name} paid` : `${i.person_name} owes ${money(i.balance)}`}
+                </span>
+              ))}
+              {t.trip && <span className="chip">✈ {t.trip.name}</span>}
+              {t.foreign_currency && t.foreign_amount != null && (
+                <span className="chip">
+                  {t.foreign_currency} {t.foreign_amount.toLocaleString("en-NZ", { maximumFractionDigits: 2 })}
+                </span>
+              )}
+              {t.unallocated != null && t.unallocated > 0 && <span className="chip">{money(t.unallocated)} unallocated</span>}
+              {t.removed_at && <span className="chip">removed by bank</span>}
             </div>
           )}
         </div>
-        <div className={`shrink-0 text-right text-sm font-semibold ${t.removed_at ? "text-muted line-through" : t.amount > 0 ? "text-good" : ""}`}>
+        <div className={`shrink-0 text-right text-[15px] font-semibold ${t.removed_at ? "line-through" : t.amount > 0 ? "text-good" : "text-danger"}`}>
           {netted ? (
             <>
-              <span className="font-normal text-muted line-through">{money(Math.abs(t.amount))}</span> → {money(Math.abs(t.net_amount))}
-              <div className="text-[11px] font-normal text-muted">net</div>
+              {money(-Math.abs(t.net_amount))}
+              <div className="text-[11px] font-normal text-muted line-through">{money(t.amount)}</div>
             </>
           ) : (
             <>
@@ -108,74 +175,62 @@ export default function TxnRow({
           )}
         </div>
       </div>
-      {t.reimbursed_by.length > 0 && (
-        <ul className="mt-1 space-y-0.5 text-xs text-muted">
-          {t.reimbursed_by.map((l) => (
-            <li key={l.link_id}>
-              Paid back {money(l.amount)} by <b className="text-ink">{l.other_name}</b> ({shortDate(l.other_date)}) ·{" "}
-              <button className="underline" onClick={() => unlink(l.link_id)}>Unlink</button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {t.linked_to.length > 0 && (
-        <ul className="mt-1 space-y-0.5 text-xs text-muted">
-          {t.linked_to.map((l) => (
-            <li key={l.link_id}>
-              Linked {money(l.amount)} to <b className="text-ink">{l.other_name}</b> ({shortDate(l.other_date)}) ·{" "}
-              <button className="underline" onClick={() => unlink(l.link_id)}>Unlink</button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {t.netted_off ? (
-          // Fully allocated: the money belongs to the expense(s) it paid back.
-          <span className="chip bg-accent-soft text-ink" title="Fully netted off against the expense below — no category needed">
-            ✓ {t.netted_categories.length ? `${t.netted_categories.join(", ")} · netted off` : "Netted off"}
-          </span>
-        ) : (
-          <>
-            <CategorySelect
-              cats={cats}
-              value={cat}
-              onChange={(id) => {
-                setCat(id);
-                save(id, false);
-              }}
-              className="max-w-[60%]"
-              ariaLabel={`Category for ${who}${t.unallocated ? " (unallocated part)" : ""}`}
-            />
-            {t.unallocated != null && t.unallocated > 0 && (
-              <span className="chip" title="Only this part needs a category; the rest is netted off">
-                {money(t.unallocated)} unallocated
-              </span>
+
+      {open && (
+        <div className="mt-2 space-y-2 rounded-2xl border border-border bg-surface-2 p-3 text-sm">
+          <div className="text-xs text-muted">
+            {shortDate(t.local_date)} · {t.is_manual ? "Cash" : (acct?.name ?? "—")}
+            {t.merchant_name && t.merchant_name !== t.description ? ` · ${t.description}` : ""}
+            {t.is_transfer && <> · {t.category_kind === "savings" ? "savings, not spending" : "transfer, excluded from totals"}</>}
+            {t.category_source && t.category_source !== "manual" && <> · categorised by {t.category_source}</>}
+          </div>
+          {t.reimbursed_by.length > 0 && (
+            <ul className="space-y-0.5 text-xs text-muted">
+              {t.reimbursed_by.map((l) => (
+                <li key={l.link_id}>
+                  Paid back {money(l.amount)} by <b className="text-ink">{l.other_name}</b> ({shortDate(l.other_date)}) ·{" "}
+                  <button className="underline" onClick={() => unlink(l.link_id)}>Unlink</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {t.linked_to.length > 0 && (
+            <ul className="space-y-0.5 text-xs text-muted">
+              {t.linked_to.map((l) => (
+                <li key={l.link_id}>
+                  Linked {money(l.amount)} to <b className="text-ink">{l.other_name}</b> ({shortDate(l.other_date)}) ·{" "}
+                  <button className="underline" onClick={() => unlink(l.link_id)}>Unlink</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {!t.netted_off && (
+              <CategorySelect
+                cats={cats}
+                value={cat}
+                onChange={(id) => {
+                  setCat(id);
+                  save(id, false);
+                }}
+                className="max-w-[60%]"
+                ariaLabel={`Change category for ${who}`}
+              />
             )}
-          </>
-        )}
-        {t.is_transfer && <span className="chip">{t.category_kind === "savings" ? "savings · not spending" : "transfer · excluded"}</span>}
-        {t.removed_at && <span className="chip" title="The bank removed this after it settled; it's excluded from totals">removed by bank</span>}
-        {t.trip && <a href={`/trips/${t.trip.id}`} className="chip">✈ {t.trip.name}</a>}
-        {t.ious.map((i) => (
-          <a key={i.id} href="/owed" className="chip">
-            {i.status === "settled" ? "✓ " : ""}{i.person_name} owes {money(i.status === "settled" ? i.amount : i.balance)}
-          </a>
-        ))}
-        {t.category_source && t.category_source !== "manual" && !t.is_transfer && (
-          <span className="chip" title="How this was categorised">{t.category_source}</span>
-        )}
-        {t.amount < 0 && !t.is_transfer && !t.removed_at && Math.abs(t.net_amount) > 0 && (
-          <>
-            <button className="btn px-2 py-1 text-xs" onClick={() => setNetOff((v) => !v)} aria-expanded={netOff}>
-              Net off
-            </button>
-            <button className="btn px-2 py-1 text-xs" onClick={() => setIouOpen((v) => !v)} aria-expanded={iouOpen}>
-              IOU
-            </button>
-          </>
-        )}
-        {busy && <span className="text-xs text-muted">Saving…</span>}
-      </div>
+            {t.amount < 0 && !t.is_transfer && !t.removed_at && Math.abs(t.net_amount) > 0 && (
+              <>
+                <button className="btn px-3 py-1 text-xs" onClick={() => setNetOff((v) => !v)} aria-expanded={netOff}>
+                  Net off
+                </button>
+                <button className="btn px-3 py-1 text-xs" onClick={() => setIouOpen((v) => !v)} aria-expanded={iouOpen}>
+                  IOU
+                </button>
+              </>
+            )}
+            {busy && <span className="text-xs text-muted">Saving…</span>}
+          </div>
+        </div>
+      )}
       {iouOpen && (
         <form
           className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-2 p-2 text-xs"

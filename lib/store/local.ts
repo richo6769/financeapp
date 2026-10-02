@@ -26,6 +26,7 @@ const emptyDb = (): DB => ({
   weekly_caps: [],
   weekly_recaps: [],
   category_guesses: [],
+  merchant_logos: [],
 });
 
 /** Tables whose rows have no `id` column (keyed by user_id). */
@@ -37,6 +38,7 @@ const HAS_UPDATED_AT: TableName[] = [
   "budgets",
   "settings",
   "weekly_caps",
+  "merchant_logos",
 ];
 
 export function matches<T>(row: T, filter?: Filter<T>): boolean {

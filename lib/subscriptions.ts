@@ -58,6 +58,8 @@ export interface DetectedSub {
   missed: boolean;
   lapsed: boolean;
   ignored: boolean;
+  /** Category of the latest charge (for "bills still to come" in budgeted categories). */
+  category_id: string | null;
 }
 
 export function detectFromTransactions(txns: Transaction[], today = todayLocal()): Omit<DetectedSub, "ignored">[] {
@@ -103,6 +105,7 @@ export function detectFromTransactions(txns: Transaction[], today = todayLocal()
     out.push({
       key,
       name: last.merchant_name ?? merchantPattern(last).pattern.toUpperCase(),
+      category_id: last.category_id,
       frequency,
       amount: fromCents(lastC),
       monthly_equivalent: fromCents(mulDiv(lastC, num, den)),

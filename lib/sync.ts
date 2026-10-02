@@ -9,6 +9,7 @@ import { reverseIouForLink } from "@/lib/iou";
 import { fromCents, toCents } from "@/lib/money";
 import { backfillMonths } from "@/lib/env";
 import { autoGuess } from "@/lib/inbox";
+import { merchantKey } from "@/lib/subscriptions";
 
 /** Mock data is generated, so demo mode always shows a full year of history. */
 export const MOCK_BACKFILL_MONTHS = 12;
@@ -175,6 +176,23 @@ export async function runSync(
       return { ...base, ...decided };
     });
     const saved = await store.upsert("transactions", rows, "akahu_id");
+
+    // Merchant logos (Akahu enrichment), one per merchant. Optional: a missing
+    // table (migration not run yet) mustn't fail the sync.
+    const logos = new Map<string, string>();
+    for (const t of akTxns) {
+      const url = t.meta?.logo ?? t.merchant?.logo;
+      if (!url || !/^https:\/\/[^\s"'<>]{1,490}$/.test(url)) continue;
+      const k = merchantKey({ merchant_name: t.merchant?.name ?? null, description: t.description }).slice(0, 200);
+      if (k) logos.set(k, url);
+    }
+    if (logos.size) {
+      try {
+        await store.upsert("merchant_logos", [...logos].map(([merchant_key, url]) => ({ merchant_key, url })), "user_id,merchant_key");
+      } catch (err) {
+        console.warn("[sync] couldn't save merchant logos:", err instanceof Error ? err.message : err);
+      }
+    }
 
     // Settled transactions the bank has since removed: flag, never delete.
     const fetchedIds = new Set(ids);
