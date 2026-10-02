@@ -15,7 +15,7 @@ import type { AkahuAccount, AkahuClient, AkahuTransaction } from "@/lib/akahu/ty
 import { MockAkahuClient } from "@/lib/akahu/mock";
 import { LiveAkahuClient, AkahuAuthError } from "@/lib/akahu/live";
 import { addMoney, fromCents, mulDiv, sumCents, toCents, toMonthly, monthlyToCycleCents } from "@/lib/money";
-import { addDays, addMonths, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
+import { addDays, addMonths, daysBetween, monthStart, parseLocalDate, todayLocal, toLocalDate, weekEnd, weekStart } from "@/lib/dates";
 import { accountKey, categorise, findRule, isCardCharge, looksLikeTransfer, merchantPattern, ruleMatches, unsafeRegexReason } from "@/lib/categorise";
 import { budgetStatus, categoryBreakdown, createRule, findTransactions, setBudget, setTransactionCategory, spendingByCategory, UserError } from "@/lib/services";
 import { dashboard } from "@/lib/dashboard";
@@ -30,6 +30,7 @@ import { runSync, purgeMockData } from "@/lib/sync";
 import { executeTool } from "@/lib/chat/tools";
 import { runMockPlanner } from "@/lib/chat/mock";
 import { clip, cleanDescription } from "@/lib/text";
+import { budgetOverview, dailySpend, insights } from "@/lib/overview";
 import { autoGuess, categoriseGroups, dismissGuess, guessCategories, inboxGroups, parseGuesses, quickCategories, storedGuesses, undoCategorise } from "@/lib/inbox";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "financeapp-features-"));
@@ -1136,6 +1137,74 @@ async function categoryDrilldown() {
   ok(`every category's breakdown adds up to its bar (${s.categories.length} categories on mock data); net offs at net; merchants sum to the total`);
 }
 
+async function budgetTabAndInsights() {
+  section("Budget tab, Categories comparison, calendar, logos");
+  const store = await freshStore();
+  await runSync(store, new MockAkahuClient(), "test");
+  // Period navigation: current month → previous month → back.
+  const cur = await budgetStatus(store);
+  assert.equal(cur.is_current, true);
+  assert.equal(cur.next_at, null, "can't go into the future");
+  const last = await budgetStatus(store, { at: cur.prev_at });
+  assert.equal(last.from, monthStart(addMonths(today, -1)));
+  assert.equal(last.to, last.period_end, "a past month runs to its end");
+  assert.equal(last.is_current, false);
+  assert.equal(last.next_at, cur.from);
+  assert.equal(last.daily.length, daysBetween(last.from, last.to) + 1);
+  assert.equal(last.daily.at(-1)!.spent, last.total_spent, "the pace line ends at the total");
+  // Pay cycles navigate too.
+  await savePayCycle(store, "fortnightly", addDays(today, -3));
+  const cyc = await budgetStatus(store, { mode: "cycle" });
+  const prevCyc = await budgetStatus(store, { mode: "cycle", at: cyc.prev_at });
+  assert.equal(prevCyc.period_end, addDays(cyc.from, -1));
+  assert.equal(daysBetween(prevCyc.from, prevCyc.period_end), 13);
+  ok("‹ › navigation for months and pay cycles; past periods run to their end; pace series ends at the total");
+
+  // Safe to spend = limit − spent − subscriptions still due this period.
+  await setBudget(store, { category: "Groceries", amount: 600 });
+  await setBudget(store, { category: "Eating Out", amount: 300 });
+  const ov = await budgetOverview(store, "month");
+  assert.equal(ov.limit, 900);
+  assert.ok(ov.upcoming.every((u) => u.date >= today && u.date <= ov.status.period_end));
+  assert.equal(toCents(ov.safe_to_spend!), toCents(900) - toCents(ov.status.total_spent) - toCents(ov.upcoming_total));
+  assert.ok(ov.forecast >= ov.status.total_spent);
+  assert.equal(ov.days_to_payday, daysBetween(today, ov.next_payday!));
+  const past = await budgetOverview(store, "month", ov.status.prev_at);
+  assert.equal(past.safe_to_spend, null, "no safe-to-spend for a finished period");
+  ok(`safe to spend = $900 budgets − spent − ${ov.upcoming.length} upcoming subscription(s); next payday in ${ov.days_to_payday} days`);
+
+  // Categories comparison matches the home page totals, previous period is the same length.
+  const ins = await insights(store, "spending", last.from, last.to);
+  assert.equal(ins.total, last.total_spent, "category total = budget total for the month");
+  assert.equal(daysBetween(ins.prev_from, ins.prev_to), daysBetween(ins.from, ins.to));
+  assert.equal(ins.prev_to, addDays(ins.from, -1));
+  assert.equal(sumCents(ins.rows.map((r) => r.current)), toCents(ins.total));
+  assert.ok(ins.rows.find((r) => r.name === "Groceries")?.group === "Food");
+  const inc = await insights(store, "income", last.from, last.to);
+  assert.ok(inc.rows.some((r) => r.name === "Salary" && r.current > 0));
+  assert.ok(inc.rows.every((r) => r.current >= 0), "income rows are money in");
+  ok(`Categories: spending per category adds up to the month ($${ins.total}), vs the previous ${daysBetween(ins.from, ins.to) + 1} days; income view lists Salary`);
+
+  // Calendar days add up to the month too.
+  const cal = await dailySpend(store, last.from, last.to);
+  assert.equal(sumCents(cal.days.map((d) => d.spent)), toCents(last.total_spent));
+  await assert.rejects(dailySpend(store, "2026-01-01", "2026-06-01"), UserError);
+  ok("calendar: per-day spend sums to the month");
+
+  // Merchant logos from Akahu are kept per merchant; bad URLs are ignored.
+  const accounts = await new MockAkahuClient().listAccounts();
+  const base = { _account: accounts[0]._id, date: `${today}T01:00:00Z`, amount: -5, type: "EFTPOS" } as const;
+  const logoTxns = [
+    { ...base, _id: "logo_1", description: "COFFEE SUPREME", merchant: { _id: "m1", name: "Coffee Supreme" }, meta: { logo: "https://cdn.akahu.nz/logos/coffee.png" } },
+    { ...base, _id: "logo_2", description: "SKETCHY", merchant: { _id: "m2", name: "Sketchy", logo: "javascript:alert(1)" } },
+  ] as unknown as AkahuTransaction[];
+  const s2 = await freshStore();
+  await runSync(s2, new ScriptedClient(accounts, logoTxns), "test");
+  const logos = await s2.select("merchant_logos");
+  assert.deepEqual(logos.map((l) => [l.merchant_key, l.url]), [["coffee supreme", "https://cdn.akahu.nz/logos/coffee.png"]]);
+  ok("merchant logos saved from Akahu (https only); others show initials");
+}
+
 async function main() {
   await money();
   await dst();
@@ -1157,6 +1226,7 @@ async function main() {
   await groupedInbox();
   await inboxUndoAndAutoGuess();
   await categoryDrilldown();
+  await budgetTabAndInsights();
   await liveClient();
   await chatSafety();
   console.log(`\nAll ${passed} feature checks passed.`);

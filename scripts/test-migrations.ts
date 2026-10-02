@@ -107,6 +107,13 @@ async function main() {
   await rejects(db, `insert into public.category_guesses (user_id, group_key, confidence) values ($1, 'y', 'certain')`, /check constraint/, [OWNER]);
   ok("category_guesses: one per merchant group, status/confidence constrained, migration re-runs safely");
 
+  // Merchant logos: https only, one per merchant.
+  await db.exec(fs.readFileSync("supabase/migrations/20261002000000_merchant_logos.sql", "utf8"));
+  await db.query(`insert into public.merchant_logos (user_id, merchant_key, url) values ($1, 'coffee supreme', 'https://x.nz/a.png')`, [OWNER]);
+  await rejects(db, `insert into public.merchant_logos (user_id, merchant_key, url) values ($1, 'coffee supreme', 'https://x.nz/b.png')`, /duplicate key/, [OWNER]);
+  await rejects(db, `insert into public.merchant_logos (user_id, merchant_key, url) values ($1, 'evil', 'javascript:alert(1)')`, /check constraint/, [OWNER]);
+  ok("merchant_logos: https URLs only, one per merchant, migration re-runs safely");
+
   // Reimbursement trigger (runs the SELECT … FOR UPDATE path).
   const tx = async (desc: string, amount: string) =>
     (
