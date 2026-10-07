@@ -19,7 +19,16 @@ export async function GET(req: Request) {
     : tokenHash
       ? await supabase.auth.verifyOtp({ token_hash: tokenHash, type })
       : { error: new Error("Missing code") };
-  if (error) return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error.message)}`, url.origin));
+  if (error) {
+    // The PKCE verifier lives in the browser that asked for the link; opening
+    // the link in another browser (e.g. the Mail/Gmail in-app one) can't finish it.
+    const message = /code verifier|pkce/i.test(error.message)
+      ? "That link opened in a different browser from the one you asked from. Enter the 6-digit code from the email instead, or request a new link and open it in the same browser."
+      : /expired|invalid/i.test(error.message)
+        ? "That link has expired or was already used. Request a new code."
+        : error.message;
+    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(message)}`, url.origin));
+  }
   const { data } = await supabase.auth.getUser();
   if (!env.ownerEmail || data.user?.email?.toLowerCase() !== env.ownerEmail) {
     await supabase.auth.signOut();

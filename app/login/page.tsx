@@ -10,7 +10,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main className="mx-auto flex min-h-[80dvh] max-w-sm flex-col justify-center px-4">
       <h1 className="text-2xl font-semibold">Kiwi Ledger</h1>
-      <p className="mt-1 text-sm text-muted">Sign in with a magic link.</p>
+      <p className="mt-1 text-sm text-muted">Sign in with a code from your email.</p>
       {error && <p className="mt-4 rounded-lg bg-danger-soft p-3 text-sm text-danger">{error}</p>}
       <LoginForm />
     </main>

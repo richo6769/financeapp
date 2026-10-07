@@ -254,7 +254,15 @@ Tools: `create_category`, `update_category`, `delete_category`, `set_budget`,
 5. **Authentication → URL Configuration**: set *Site URL* to your Vercel URL and add
    `http://localhost:3000/auth/callback` and `https://<your-app>.vercel.app/auth/callback`
    to *Redirect URLs*.
-6. **Project Settings → API**: copy *Project URL*, *anon public* key and
+6. **Authentication → Emails → Magic Link** template: replace the body with this,
+   so the email has a 6-digit code (works in the home-screen app) and a link that
+   works in any browser:
+   ```html
+   <h2>Sign in to Kiwi Ledger</h2>
+   <p>Your code: <strong style="font-size:24px;letter-spacing:4px">{{ .Token }}</strong></p>
+   <p>Or <a href="{{ .RedirectTo }}?token_hash={{ .TokenHash }}&type=email">tap here to sign in</a> (signs in the browser that opens it).</p>
+   ```
+7. **Project Settings → API**: copy *Project URL*, *anon public* key and
    *service_role* key into your env (below).
 7. **After your first login, turn off sign-ups:** Authentication → Sign In / Providers →
    untick **Allow new users to sign up**. This is the third layer: the app only
